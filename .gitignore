@@ -1,0 +1,40 @@
+# ── Personal configuration (never commit) ────────────────────────────────────
+config.local.yaml
+
+# ── Pipeline runtime outputs ──────────────────────────────────────────────────
+data/sequences/
+data/fold_inputs/
+data/interpro/
+results/
+logs/
+
+# ── Snakemake internals ───────────────────────────────────────────────────────
+.snakemake/
+*.snakemake.log
+
+# ── Conda environments (built automatically by Snakemake) ────────────────────
+.conda/
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/

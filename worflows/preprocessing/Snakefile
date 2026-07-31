@@ -1,0 +1,366 @@
+"""
+Snakefile_preprocess — Stages 1-3
+==================================
+Run locally (Mac / workstation). Prepares all inputs needed for ABCfold
+(https://github.com/rigdenlab/ABCFold) to run AlphaFold3, Boltz-2, Chai-1,
+OpenFold3, Protenix and RosettaFold3 together.
+
+  1. Sequences   — UniProt → per-protein FASTA
+  2. Fold input  — fold_input.json per protein x form (sequence + every
+                    replica seed) — AlphaFold3-dialect JSON, ABCfold's own
+                    native input format
+  3. MMseqs2     — "default run" MSA + top-hit templates from the ColabFold
+     default run   webserver (no manual curation, no pocket restraint —
+                    mirrors NPF_pocket_pipeline's templates.default_run),
+                    fetched ONCE per base protein via ABCfold's own
+                    `mmseqs2msa` CLI and embedded into fold_input.json so
+                    every backend has everything it needs offline.
+
+Every protein is run TWICE: once apoform (no ligand) and, whenever
+ligand_for() assigns one, once holoform. Apo/holo are modeled as separate
+protein identifiers ("{protein}__apo" / "{protein}__holo") rather than
+nested subfolders, so downstream stages (submit_abcfold.sh,
+tm_helix_alignment.py) that treat the protein-folder name as an opaque key
+need no changes.
+
+Also writes data/fold_inputs/priority_gibberellin.txt: the list of
+apo/holo run identifiers for Gibberellin (GA1) importers — the protein
+class notebook/tm_conformation_clustering_gibberellin_boltz.ipynb showed
+AF3 alone (even with 30 seeds) does not recover every conformation a
+second model finds. worflows/processing/submit_abcfold.sh reads this file
+to process that group first.
+
+Interface to processing stage:
+  data/fold_inputs/{protein}__apo/fold_input.resolved.json   (always, no ligand)
+  data/fold_inputs/{protein}__holo/fold_input.resolved.json  (only if a ligand is assigned)
+  data/fold_inputs/priority_gibberellin.txt                  (GA1 run identifiers, priority order)
+  data/sequences/sequences.done                              (base protein name list)
+
+Usage:
+  snakemake -s worflows/preprocessing/Snakefile --cores 4 --use-conda
+"""
+
+from pathlib import Path
+
+configfile: "config.yaml"
+
+if Path("config.local.yaml").exists():
+
+    configfile: "config.local.yaml"
+
+
+# ── Directory shortcuts ────────────────────────────────────────────────────────
+DIRS = config["dirs"]
+FASTA_DIR = Path(DIRS["fasta"])
+FOLD_IN_DIR = Path(DIRS["fold_in"])
+LOG_DIR = Path(DIRS["logs"])
+AF3_CFG = config["af3"]
+MMSEQS_CFG = config["mmseqs2"]
+LIGANDS = config["ligands"]
+
+SEQ_SENTINEL = FASTA_DIR / "sequences.done"
+PRIORITY_MANIFEST = FOLD_IN_DIR / "priority_gibberellin.txt"
+
+
+# ── Ligand assignment (apoform → holoform) ─────────────────────────────────────
+# Based on the NPF substrate table (Nitrate transport / Other substrates
+# columns). High-confidence gibberellin importers get GA1. Everything else
+# gets the best non-GA ligand supported by the table — nitrate preferred
+# (simplest, and "Yes" nitrate transport is well documented), ABA as
+# fallback — disregarding any GA entries in the "Other substrates" column for
+# non-HC proteins. A handful of remaining proteins get a protein-specific
+# substrate (auxin, glycerate, dimethylarsenate, JA-Ile, dipeptide,
+# flavonoid, polyamine) when that's the only ligand the table (or targeted
+# follow-up literature) documents for them. Two GA-only proteins get GA1 as
+# a low-confidence guess (LOW_CONFIDENCE_GA_IMPORTERS). NPFs with no
+# substrate data anywhere are run apoform rather than guessing.
+HC_IMPORTERS = [
+    "NPF3.1", "NPF4.1", "NPF2.12", "NPF2.13", "NPF2.10", "NPF2.5",
+    # medium confidence — not yet included:
+    # "NPF2.7", "NPF2.3", "NPF2.4", "NPF4.2", "NPF1.1", "NPF1.2",
+]
+
+NITRATE_TRANSPORTERS = [
+    "NPF1.1", "NPF1.2", "NPF1.3", "NPF2.3", "NPF2.4", "NPF2.7", "NPF2.9",
+    "NPF2.11", "NPF4.6", "NPF5.5", "NPF5.8", "NPF5.9", "NPF5.10", "NPF5.11",
+    "NPF5.12", "NPF5.14", "NPF5.16", "NPF6.2", "NPF6.3", "NPF7.2", "NPF7.3",
+    "NPF8.5",
+]
+
+ABA_TRANSPORTERS = [
+    "NPF2.14", "NPF4.2", "NPF4.5", "NPF4.7", "NPF5.1", "NPF5.2", "NPF5.3",
+    "NPF5.7",
+]
+
+AUXIN_TRANSPORTERS = ["NPF7.1"]              # IAA
+GLYCERATE_TRANSPORTERS = ["NPF8.4"]          # Glycerate
+DIMETHYLARSENATE_TRANSPORTERS = ["NPF8.1", "NPF8.2"]  # also list peptides, not modeled
+JA_ILE_TRANSPORTERS = ["NPF2.6"]             # GA disregarded; JA-Ile is the other substrate
+# Gly-Gly: reference dipeptide substrate in Chiang, Stacey & Tsay 2004
+# (doi:10.1074/jbc.M405192200) — used there to establish AtPTR2/NPF8.3 as a
+# peptide (not nitrate) transporter, and as the 100% baseline for all other
+# dipeptides tested.
+DIPEPTIDE_TRANSPORTERS = ["NPF8.3"]
+# Quercetin-3-O-sophoroside: one of the two pollen-surface flavonol
+# diglycosides identified for FST1 (Grunewald et al. 2020, doi:10.1105/tpc.19.00801)
+FLAVONOID_TRANSPORTERS = ["NPF2.8"]
+# NRT1.3/NPF6.4 mutants show altered spermidine/putrescine resistance and
+# uptake (older literature, not in the substrate table); spermidine chosen
+# over putrescine/nitrate since it's the substrate directly assayed for
+# transport (not just resistance).
+POLYAMINE_TRANSPORTERS = ["NPF6.4"]
+
+# Low-tier-confidence GA importers: NPF2.1 and NPF5.6 have GA listed
+# directly in the table's "Other substrates" column (disregarded for the
+# nitrate/ABA/etc. tiers above, but reinstated here since nothing else
+# claimed them). Everything else with zero substrate data in the table
+# (NPF2.2, NPF4.3, NPF4.4, NPF5.4, NPF5.13, NPF5.15, NPF6.1) is run apoform
+# rather than guessing GA1 from subfamily membership alone.
+LOW_CONFIDENCE_GA_IMPORTERS = ["NPF2.1", "NPF5.6"]
+
+# Gibberellin (GA1) importers — the priority group for submit_abcfold.sh's
+# manifest ordering (see rule write_priority_manifest below).
+GIBBERELLIN_IMPORTERS = HC_IMPORTERS + LOW_CONFIDENCE_GA_IMPORTERS
+
+
+def ligand_for(protein_name):
+    """NPF name (e.g. 'NPF3.1') is the fasta basename up to the last '_'."""
+    npf_name = protein_name.rsplit("_", 1)[0]
+    if npf_name in HC_IMPORTERS:
+        return "GA1"
+    if npf_name in NITRATE_TRANSPORTERS:
+        return "nitrate"
+    if npf_name in ABA_TRANSPORTERS:
+        return "ABA"
+    if npf_name in AUXIN_TRANSPORTERS:
+        return "auxin"
+    if npf_name in GLYCERATE_TRANSPORTERS:
+        return "glycerate"
+    if npf_name in DIMETHYLARSENATE_TRANSPORTERS:
+        return "dimethylarsenate"
+    if npf_name in DIPEPTIDE_TRANSPORTERS:
+        return "glycylglycine"
+    if npf_name in FLAVONOID_TRANSPORTERS:
+        return "quercetin-3-O-sophoroside"
+    if npf_name in POLYAMINE_TRANSPORTERS:
+        return "spermidine"
+    if npf_name in JA_ILE_TRANSPORTERS:
+        return "JA-Ile"
+    if npf_name in LOW_CONFIDENCE_GA_IMPORTERS:
+        return "GA1"
+    return None
+
+
+def is_gibberellin_importer(protein_name):
+    npf_name = protein_name.rsplit("_", 1)[0]
+    return npf_name in GIBBERELLIN_IMPORTERS
+
+
+def base_protein_of(combined_protein):
+    """Strip the '__apo' / '__holo' suffix to recover the fasta basename."""
+    return combined_protein.rsplit("__", 1)[0]
+
+
+def fasta_input(wildcards):
+    return str(FASTA_DIR / f"{base_protein_of(wildcards.protein)}.fasta")
+
+
+def ligand_args(wildcards):
+    combined = wildcards.protein
+    if combined.endswith("__apo"):
+        return ""
+    if not combined.endswith("__holo"):
+        raise ValueError(f"protein wildcard must end in '__apo' or '__holo': {combined}")
+    base = base_protein_of(combined)
+    ligand_key = ligand_for(base)
+    if ligand_key is None:
+        raise ValueError(f"No ligand assigned for holoform target {combined}")
+    return f"--ligand-smiles '{LIGANDS[ligand_key]['smiles']}' --ligand-name {ligand_key}"
+
+
+def read_proteins(sentinel_path):
+    p = Path(sentinel_path)
+    if p.exists():
+        return [line.strip() for line in p.read_text().splitlines() if line.strip()]
+    return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 1: Sequence download (checkpoint — discovers protein list)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+checkpoint download_sequences:
+    output:
+        sentinel=str(SEQ_SENTINEL),
+    log:
+        str(LOG_DIR / "download_sequences.log"),
+    conda:
+        "../../envs/preprocessing.yaml"
+    params:
+        fasta_dir=str(FASTA_DIR),
+        query=config["uniprot"]["query"],
+        size=config["uniprot"]["size"],
+    shell:
+        """
+        python scripts/download_sequences.py \\
+        --fasta-dir {params.fasta_dir} \\
+        --sentinel {output.sentinel} \\
+        --query '{params.query}' \\
+        --size {params.size} \\
+        >{log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 2: fold_input.json (one per protein x apo/holo form, all seeds inside)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+rule prepare_af3_input:
+    input:
+        fasta=fasta_input,
+        seq_done=str(SEQ_SENTINEL),
+    output:
+        json=str(FOLD_IN_DIR / "{protein}" / "fold_input.json"),
+    log:
+        str(LOG_DIR / "af3_input" / "{protein}.log"),
+    conda:
+        "../../envs/preprocessing.yaml"
+    params:
+        n_replicas=AF3_CFG["n_replicas"],
+        seed_strategy=AF3_CFG["seed_strategy"],
+        seed_base=AF3_CFG["seed_base"],
+        random_master_seed=AF3_CFG["random_master_seed"],
+        dialect=AF3_CFG["dialect"],
+        json_version=AF3_CFG["json_version"],
+        ligand_args=ligand_args,
+    shell:
+        """
+        python scripts/make_af3_input.py \\
+        --fasta {input.fasta} \\
+        --protein-name {wildcards.protein} \\
+        --output {output.json} \\
+        --n-replicas {params.n_replicas} \\
+        --seed-strategy {params.seed_strategy} \\
+        --seed-base {params.seed_base} \\
+        --random-master-seed {params.random_master_seed} \\
+        --dialect {params.dialect} \\
+        --json-version {params.json_version} \\
+        {params.ligand_args} \\
+        >{log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 3: MMseqs2 "default run" — MSA + templates from the ColabFold webserver
+# ─────────────────────────────────────────────────────────────────────────────
+# Run once per BASE protein (on the apoform JSON — apo and holo share the
+# same sequence), then copied onto the holoform JSON by inject_mmseqs_msa.py
+# so the webserver is never queried twice for one sequence.
+
+
+rule fetch_mmseqs2_msa:
+    input:
+        json=str(FOLD_IN_DIR / "{base}__apo" / "fold_input.json"),
+    output:
+        resolved=str(FOLD_IN_DIR / "{base}__apo" / "fold_input.resolved.json"),
+    log:
+        str(LOG_DIR / "mmseqs2_msa" / "{base}__apo.log"),
+    conda:
+        "../../envs/preprocessing.yaml"
+    params:
+        num_templates=MMSEQS_CFG["num_templates"],
+        retries=MMSEQS_CFG["retries"],
+        delay=MMSEQS_CFG["delay"],
+    shell:
+        """
+        python scripts/fetch_mmseqs2_msa.py \\
+        --input-json {input.json} \\
+        --output-json {output.resolved} \\
+        --num-templates {params.num_templates} \\
+        --retries {params.retries} \\
+        --delay {params.delay} \\
+        >{log} 2>&1
+        """
+
+
+rule inject_mmseqs_msa_holo:
+    input:
+        apo_resolved=str(FOLD_IN_DIR / "{base}__apo" / "fold_input.resolved.json"),
+        holo_base=str(FOLD_IN_DIR / "{base}__holo" / "fold_input.json"),
+    output:
+        resolved=str(FOLD_IN_DIR / "{base}__holo" / "fold_input.resolved.json"),
+    log:
+        str(LOG_DIR / "mmseqs2_msa" / "{base}__holo.log"),
+    conda:
+        "../../envs/preprocessing.yaml"
+    shell:
+        """
+        python scripts/inject_mmseqs_msa.py \\
+        --apo-resolved {input.apo_resolved} \\
+        --holo-base {input.holo_base} \\
+        --output {output.resolved} \\
+        >{log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Priority manifest — Gibberellin (GA1) importers first
+# ─────────────────────────────────────────────────────────────────────────────
+# notebook/tm_conformation_clustering_gibberellin_boltz.ipynb (AF3_NPF_pipeline)
+# showed AF3 alone doesn't recover every conformation a second model finds
+# for this group, which is why this pipeline exists — so it's also the
+# group worflows/processing/submit_abcfold.sh should burn cluster time on
+# first.
+
+
+def priority_targets(wildcards):
+    sentinel = checkpoints.download_sequences.get().output.sentinel
+    proteins = read_proteins(sentinel)
+    targets = []
+    for protein in proteins:
+        if not is_gibberellin_importer(protein):
+            continue
+        targets.append(f"{protein}__apo")
+        if ligand_for(protein) is not None:
+            targets.append(f"{protein}__holo")
+    return targets
+
+
+rule write_priority_manifest:
+    input:
+        seq_done=str(SEQ_SENTINEL),
+    output:
+        manifest=str(PRIORITY_MANIFEST),
+    params:
+        runs=priority_targets,
+    run:
+        Path(output.manifest).parent.mkdir(parents=True, exist_ok=True)
+        Path(output.manifest).write_text("\n".join(params.runs) + "\n")
+        print(f"[priority] {len(params.runs)} Gibberellin-importer run(s) → {output.manifest}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RULE ALL — preprocess target
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def all_preprocess_targets(wildcards):
+    """Apoform always; holoform only when ligand_for() assigns a ligand.
+    Protein list comes from the download_sequences checkpoint sentinel."""
+    sentinel = checkpoints.download_sequences.get().output.sentinel
+    proteins = read_proteins(sentinel)
+    targets = []
+    for protein in proteins:
+        targets.append(str(FOLD_IN_DIR / f"{protein}__apo" / "fold_input.resolved.json"))
+        if ligand_for(protein) is not None:
+            targets.append(str(FOLD_IN_DIR / f"{protein}__holo" / "fold_input.resolved.json"))
+    return targets
+
+
+rule all:
+    default_target: True
+    input:
+        all_preprocess_targets,
+        str(PRIORITY_MANIFEST),

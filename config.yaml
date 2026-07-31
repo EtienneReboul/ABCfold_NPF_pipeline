@@ -1,0 +1,148 @@
+# =============================================================================
+# ABCfold NPF Conformation Pipeline — Master Configuration
+# =============================================================================
+# Covers all stages:
+#   1. Sequences        — UniProt download, split into per-protein FASTA
+#   2. Fold input       — fold_input.json per protein x apo/holo form
+#                          (AlphaFold3-dialect JSON, ABCfold's native input format)
+#   3. MMseqs2 default   — MSA + top-hit templates fetched ONCE per base protein
+#      run                from the ColabFold MMseqs2 webserver (no manual
+#                          curation, no pocket restraint — mirrors
+#                          NPF_pocket_pipeline's templates.default_run), then
+#                          embedded into fold_input.json so every backend has
+#                          everything it needs offline.
+#   4. ABCfold run       — AlphaFold3 + Boltz-2 + Chai-1 + OpenFold3 + Protenix +
+#                          RosettaFold3 launched together per protein x form on
+#                          the IFB cluster (SLURM), reusing the embedded MSA/
+#                          templates — no network needed on compute nodes.
+#   5. DeepTMHMM        — TM-helix topology (BioLib cloud)
+#   6. TM alignment     — Kabsch superposition on the 12 TM-helix Cα atoms,
+#                          pooled across every backend x seed
+
+# ── Stage 1: UniProt sequence download ───────────────────────────────────────
+uniprot:
+  query: 'reviewed:true AND organism_id:3702 AND protein_name:"NRT1/ PTR FAMILY"'
+  size: 500                        # max sequences to retrieve
+
+# ── Stage 2: fold_input.json (AlphaFold3-dialect, consumed by ABCfold) ──────
+# One fold_input.json per protein x apo/holo form. ABCfold accepts the same
+# JSON dialect as run_alphafold.py, so this stage is unchanged from the
+# AF3-only pipeline (scripts/make_af3_input.py). modelSeeds still lists every
+# replica explicitly (seed choice measurably changes output, never left
+# implicit) — but with 6 backends run per seed instead of 1, n_replicas is
+# kept modest by default; raise it back up once you've confirmed cluster
+# walltime/GPU-memory budget for a full -abcopr run.
+af3:
+  dialect: "alphafold3"             # fold_input.json JSON dialect (unchanged name: ABCfold expects this key)
+  json_version: 1                   # fold_input.json schema "version" field
+
+  n_replicas: 5                     # j — independent seeds per protein x form
+  seed_strategy: "sequential"       # "sequential" | "random"
+  seed_base: 1
+  random_master_seed: 0             # only used when seed_strategy: random
+
+# ── Stage 3: MMseqs2 "default run" — MSA + templates from the ColabFold ─────
+# webserver, no curated/synthetic template override, no pocket constraint.
+# Wraps ABCfold's own `mmseqs2msa` CLI utility (ships with the abcfold PyPI
+# package) — the ABCfold-native equivalent of NPF_pocket_pipeline's
+# templates.default_run (scripts/run_msa.py + make_default_boltz_input.py).
+# Run ONCE per base protein on the apoform JSON; scripts/inject_mmseqs_msa.py
+# then copies the resulting unpairedMsa/templates fields into the holoform
+# JSON so the ligand-bearing run never re-queries the webserver for the same
+# sequence.
+mmseqs2:
+  num_templates: 20                 # ABCfold default; passed to mmseqs2msa --num_templates
+  delay: 8                          # seconds between per-protein webserver calls (politeness)
+  retries: 3                        # outer retry loop around each mmseqs2msa call
+
+# ── Stage 4: ABCfold run ──────────────────────────────────────────────────────
+# Model letters map 1:1 onto ABCfold's CLI flags (-a/-b/-c/-o/-p/-r); see
+# worflows/processing/submit_abcfold.sh. Every model below is run TOGETHER in
+# one `abcfold` invocation per protein x form — this is the whole point of
+# the switch from AF3_NPF_pipeline: notebook/tm_conformation_clustering_gibberellin_boltz.ipynb
+# showed AF3 alone (even with 30 seeds) does not recover every conformation
+# that a second model (Boltz-2) finds for the same Gibberellin-importer
+# sequences, so this pipeline samples several independent architectures
+# instead of just resampling one.
+abcfold:
+  models:                           # letters concatenated into one -abcopr-style flag
+    alphafold3: true                # -a
+    boltz: true                     # -b
+    chai1: true                     # -c
+    openfold3: true                 # -o
+    protenix: true                  # -p
+    rosettafold3: true              # -r
+
+  # AlphaFold3 backend needs its own weights + a Docker or Singularity image
+  # (ABCfold's AF3 backend shells out to `docker run` or, with af3_sif_path
+  # set, `singularity exec` — it does NOT use IFB's `module load alphafold`
+  # CLI directly, unlike the old AF3_NPF_pipeline). Confirmed on IFB
+  # (2026-07-31): `module load alphafold/3.0.2` is itself just a Singularity
+  # wrapper around /shared/software/singularity/wrappers/alphafold/3.0.2/*.sif,
+  # so no separate image needs to be built — worflows/processing/submit_abcfold.sh's
+  # discover_af3_sif() reads that same wrapper script and extracts its .sif
+  # path automatically. af3_sif_path below only needs to be set manually as
+  # an override (or on a different cluster where that auto-discovery doesn't
+  # apply); leave it empty to use the auto-discovered path.
+  model_params: "/shared/bank/alphafold3/current"   # AF3 weights dir (stored by ABCfold after first run)
+  af3_module_version: "3.0.2"       # version component of IFB's alphafold module/wrapper path
+  af3_sif_path: ""                  # override only — empty = auto-discover from the module wrapper above
+
+  number_of_models: 5               # AF3 --num_diffusion_samples-equivalent (ABCfold's number_of_models)
+  num_recycles: 10                  # AF3 recycles (ignored by OpenFold3 — see ABCfold README)
+
+  # Every other backend (Boltz, Chai-1, OpenFold3, Protenix, RosettaFold3) is
+  # auto-installed by ABCfold into internal micromamba environments the FIRST
+  # time it runs each one — that install step needs internet access. Do one
+  # `--test` run on a login node (or any node with outbound internet) before
+  # submitting the full SLURM array to compute nodes that may not have it.
+  module_version: ""                # `module load abcfold/$version` on IFB, if/when packaged there
+
+# ── Stage 2: Ligands (holoform co-folding) ───────────────────────────────────
+# SMILES for the ligands used to build holoform fold_input.json. Protein →
+# ligand assignment lives in worflows/preprocessing/Snakefile (HC_IMPORTERS,
+# NITRATE_TRANSPORTERS, ABA_TRANSPORTERS, AUXIN_TRANSPORTERS,
+# GLYCERATE_TRANSPORTERS, DIMETHYLARSENATE_TRANSPORTERS, JA_ILE_TRANSPORTERS,
+# DIPEPTIDE_TRANSPORTERS, FLAVONOID_TRANSPORTERS, POLYAMINE_TRANSPORTERS,
+# LOW_CONFIDENCE_GA_IMPORTERS). Proteins not in any of those lists are run
+# as apoform (no ligand). HC_IMPORTERS + LOW_CONFIDENCE_GA_IMPORTERS (the
+# GA1/Gibberellin group) are also the priority group for
+# worflows/processing/submit_abcfold.sh's manifest ordering.
+ligands:
+  GA1:                                # Gibberellin A1
+    smiles: "C[C@]12[C@@H](O)CC[C@@]3(OC1=O)[C@@H]4CC[C@]5(O)C[C@]4(CC5=C)[C@H]([C@H]23)C(=O)O"
+  nitrate:                            # NO3- (PubChem CID 943)
+    smiles: "[N+](=O)([O-])[O-]"
+  ABA:                                # (S)-abscisic acid (PubChem CID 5280896)
+    smiles: "CC1=CC(=O)CC([C@]1(/C=C/C(=C\\C(=O)O)/C)O)(C)C"
+  auxin:                              # Indole-3-acetic acid, IAA (PubChem CID 802)
+    smiles: "C1=CC=C2C(=C1)C(=CN2)CC(=O)O"
+  glycerate:                          # D-glycerate anion (PubChem CID 5460358)
+    smiles: "C([C@H](C(=O)[O-])O)O"
+  dimethylarsenate:                   # dimethylarsinate anion (PubChem "dimethylarsinate")
+    smiles: "C[As](=O)(C)[O-]"
+  JA-Ile:                             # (3R,7S)-jasmonoyl-L-isoleucine (PubChem CID 5497150)
+    smiles: "CC/C=C\\C[C@@H]1[C@H](CCC1=O)CC(=O)N[C@@H]([C@@H](C)CC)C(=O)O"
+  glycylglycine:                      # Gly-Gly (PubChem CID 11163); reference dipeptide substrate
+    smiles: "C(C(=O)NCC(=O)O)N"       # in Chiang, Stacey & Tsay 2004 (doi:10.1074/jbc.M405192200)
+  spermidine:                          # PubChem CID 1102
+    smiles: "C(CCNCCCN)CN"
+  quercetin-3-O-sophoroside:          # PubChem CID 5282166
+    smiles: "C1=CC(=C(C=C1C2=C(C(=O)C3=C(C=C(C=C3O2)O)O)O[C@H]4[C@@H]([C@H]([C@@H]([C@H](O4)CO)O)O)O[C@H]5[C@@H]([C@H]([C@@H]([C@H](O5)CO)O)O)O)O)O"
+
+# ── Stage 5: TM-helix topology (DeepTMHMM via BioLib) ────────────────────────
+deeptmhmm:
+  expected_tm: 12                   # required TM helix count per protein
+
+# ── Stage 6: TM-helix Kabsch alignment ───────────────────────────────────────
+tm_alignment:
+  n_iter: 5                         # Procrustes iterations to converge the mean TM structure
+
+# ── Output directories ────────────────────────────────────────────────────────
+dirs:
+  fasta:       "data/sequences"        # UniProt FASTA + per-protein FASTA
+  fold_in:     "data/fold_inputs"      # fold_input.json (base + mmseqs-resolved) per protein x form
+  interpro:    "data/interpro"         # DeepTMHMM GFF3 + topology summary
+  abcfold_out: "results/abcfold"       # ABCfold outputs (all 6 backends, cache + predictions)
+  tm_alignment: "results/tm_alignment" # aligned Cα ensembles + metadata, tagged by backend
+  logs:        "logs"

@@ -1,0 +1,23 @@
+name: abcfold-npf-pipeline
+# Controller environment — drives Snakemake orchestration.
+# Per-rule compute environments are in envs/*.yaml and built automatically.
+#
+# Install:
+#   conda env create -f envs/pipeline.yaml
+#   conda activate abcfold-npf-pipeline
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.11
+  - snakemake>=8.0
+  - snakemake-executor-plugin-slurm>=0.4   # for running Snakemake-driven steps on IFB
+  - pyyaml>=6.0
+  - requests>=2.31
+  - biopython
+  - tqdm
+  - graphviz                                # snakemake --dag | dot -Tsvg
+  - pip
+  - pip:
+      - snakemake-executor-plugin-slurm     # in case bioconda lags

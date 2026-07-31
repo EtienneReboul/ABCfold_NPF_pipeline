@@ -1,0 +1,28 @@
+# =============================================================================
+# config.local.yaml — Personal overrides (NOT tracked by git)
+# =============================================================================
+#
+# HOW TO USE
+# ----------
+# 1. Copy this file:
+#       cp config.local.yaml.example config.local.yaml
+# 2. Uncomment/edit only the values you want to override.
+#    Everything else stays as defined in config.yaml.
+# 3. Snakemake picks it up automatically (see worflows/*/Snakefile).
+#
+# Nothing here is required on IFB: worflows/processing/submit_abcfold.sh
+# auto-discovers the AF3 Singularity image from `module load alphafold`'s own
+# wrapper script (confirmed 2026-07-31 — see the script's discover_af3_sif()).
+# Only set abcfold.af3_sif_path if that auto-discovery ever fails, or you're
+# running this on a cluster other than IFB.
+# =============================================================================
+
+# abcfold:
+#   af3_sif_path: "/shared/projects/<your_project>/containers/alphafold3.sif"
+#   model_params: "/shared/bank/alphafold3/current"
+
+# af3:
+#   n_replicas: 2             # cut down seeds for a quick --test submission
+
+# mmseqs2:
+#   num_templates: 5          # faster default-run pass while iterating locally

@@ -1,0 +1,158 @@
+"""
+Snakefile_postprocess — Stages 5-6
+====================================
+Run locally (Mac / workstation) after worflows/processing/submit_abcfold.sh
+has completed on the cluster and results/abcfold/ has been rsynced back.
+
+Pipeline order
+--------------
+  5. deeptmhmm_topology — TM-helix topology via DeepTMHMM (BioLib cloud)
+  6. tm_helix_alignment — Kabsch superposition of every model CIF ABCfold
+                           produced (pooled across all 6 backends x seed)
+                           onto the 12 TM-helix Cα atoms, per protein x form
+
+Both stages are independent of each other's inputs beyond the topology
+sentinel, so they parallelize freely across proteins.
+
+Prerequisites:
+  - worflows/preprocessing/Snakefile completed (data/sequences/sequences.done exists)
+  - worflows/processing/submit_abcfold.sh completed — prediction.done exists per run
+  - results/abcfold/ transferred back from the cluster
+
+Usage:
+  snakemake -s worflows/postprocessing/Snakefile --cores 8 --use-conda
+"""
+
+from pathlib import Path
+
+configfile: "config.yaml"
+if Path("config.local.yaml").exists():
+    configfile: "config.local.yaml"
+
+# ── Directory shortcuts ────────────────────────────────────────────────────────
+DIRS = config["dirs"]
+FASTA_DIR   = Path(DIRS["fasta"])
+INTERPRO_DIR = Path(DIRS["interpro"])
+ABCFOLD_OUT_DIR = Path(DIRS["abcfold_out"])
+ALIGN_DIR   = Path(DIRS["tm_alignment"])
+LOG_DIR     = Path(DIRS["logs"])
+
+DEEPTMHMM_CFG = config["deeptmhmm"]
+TM_ALIGN_CFG  = config["tm_alignment"]
+
+SEQ_SENTINEL = FASTA_DIR / "sequences.done"
+TOPOLOGY_JSON = INTERPRO_DIR / "tm_topology_summary.json"
+TOPO_SENTINEL = INTERPRO_DIR / "deeptmhmm_topology.done"
+
+
+def read_proteins(sentinel_path):
+    p = Path(sentinel_path)
+    if p.exists():
+        return [line.strip() for line in p.read_text().splitlines() if line.strip()]
+    return []
+
+
+PROTEINS = read_proteins(SEQ_SENTINEL)
+if not PROTEINS:
+    raise ValueError(
+        f"\n Cannot read protein list from {SEQ_SENTINEL}.\n"
+        " Run worflows/preprocessing/Snakefile first.\n"
+    )
+
+# Each base protein was preprocessed into up to two ABCfold runs (apoform
+# always, holoform when worflows/preprocessing/Snakefile's ligand_for()
+# assigned a ligand) — results/abcfold/<protein>__apo/ and
+# results/abcfold/<protein>__holo/, not results/abcfold/<protein>/. Only
+# runs whose ABCfold job has actually completed get an alignment target —
+# a fresh checkout has no results/abcfold/ yet, so this list is simply
+# empty until submit_abcfold.sh runs.
+RUNS = [f"{p}__{form}" for p in PROTEINS for form in ("apo", "holo")]
+DONE_PROTEINS = [
+    r for r in RUNS
+    if (ABCFOLD_OUT_DIR / r / "prediction.done").exists()
+]
+
+print(
+    f"[postprocess] {len(PROTEINS)} protein(s) known | "
+    f"{len(DONE_PROTEINS)} apo/holo run(s) with a completed ABCfold run."
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 5: TM topology via DeepTMHMM
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+rule run_deeptmhmm_topology:
+    input:
+        fasta=str(FASTA_DIR / "npf_arabidopsis.fasta"),
+        seq_done=str(SEQ_SENTINEL),
+    output:
+        gff3=str(INTERPRO_DIR / "deeptmhmm_TMRs.gff3"),
+        topology=str(TOPOLOGY_JSON),
+        sentinel=str(TOPO_SENTINEL),
+    log:
+        str(LOG_DIR / "deeptmhmm_topology.log"),
+    conda:
+        "../../envs/tm_analysis.yaml"
+    params:
+        expected_tm=DEEPTMHMM_CFG["expected_tm"],
+    shell:
+        """
+        python scripts/run_deeptmhmm_topology.py \\
+            --fasta       {input.fasta} \\
+            --gff3        {output.gff3} \\
+            --topology    {output.topology} \\
+            --sentinel    {output.sentinel} \\
+            --expected-tm {params.expected_tm} \\
+        > {log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 6: TM-helix Kabsch alignment (per protein x form, all backends pooled)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+rule tm_helix_alignment:
+    input:
+        topology=str(TOPOLOGY_JSON),
+        topo_done=str(TOPO_SENTINEL),
+        abcfold_done=str(ABCFOLD_OUT_DIR / "{protein}" / "prediction.done"),
+    output:
+        aligned_ca=str(ALIGN_DIR / "{protein}" / "aligned_ca.npy"),
+        aligned_ca_tm=str(ALIGN_DIR / "{protein}" / "aligned_ca_tm.npy"),
+        meta=str(ALIGN_DIR / "{protein}" / "meta.csv"),
+        resids=str(ALIGN_DIR / "{protein}" / "resids.csv"),
+    log:
+        str(LOG_DIR / "tm_alignment" / "{protein}.log"),
+    conda:
+        "../../envs/tm_analysis.yaml"
+    params:
+        abcfold_output_root=str(ABCFOLD_OUT_DIR),
+        out_root=str(ALIGN_DIR),
+        n_iter=TM_ALIGN_CFG["n_iter"],
+    shell:
+        """
+        python scripts/tm_helix_alignment.py \\
+            --protein              {wildcards.protein} \\
+            --abcfold-output-root  {params.abcfold_output_root} \\
+            --topology             {input.topology} \\
+            --out-root             {params.out_root} \\
+            --n-iter               {params.n_iter} \\
+        > {log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RULE ALL — postprocess targets
+# ─────────────────────────────────────────────────────────────────────────────
+
+TARGETS = [str(TOPO_SENTINEL)] + [
+    str(ALIGN_DIR / protein / "aligned_ca.npy") for protein in DONE_PROTEINS
+]
+
+rule all:
+    default_target: True
+    input:
+        TARGETS,

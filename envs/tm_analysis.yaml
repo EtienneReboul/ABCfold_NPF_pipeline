@@ -1,0 +1,17 @@
+name: tm-analysis
+# Post-processing analysis environment. Used by:
+#   - scripts/run_deeptmhmm_topology.py  (BioLib CLI + GFF3 parsing)
+#   - scripts/tm_helix_alignment.py      (Kabsch TM-helix superposition,
+#                                          pooled across every ABCfold backend)
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - gemmi>=0.7           # CIF/mmCIF parsing for Cα coordinate extraction
+  - numpy>=1.26
+  - pandas>=2.0
+  - biopython>=1.83      # FASTA parsing
+  - pip
+  - pip:
+      - pybiolib>=1.1     # `biolib run DTU/DeepTMHMM`

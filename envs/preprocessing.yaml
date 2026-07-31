@@ -1,0 +1,19 @@
+name: preprocessing
+# Env for fold_input.json generation (scripts/make_af3_input.py) and the
+# MMseqs2 "default run" MSA/template resolution (scripts/fetch_mmseqs2_msa.py,
+# scripts/inject_mmseqs_msa.py), which shells out to ABCfold's own
+# `mmseqs2msa` CLI utility — installing the `abcfold` package here is enough
+# for that; it does NOT need a micromamba installation or any GPU backend,
+# those are only required when actually running `abcfold` itself
+# (worflows/processing/submit_abcfold.sh, on the cluster).
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - biopython>=1.83
+  - requests>=2.31    # scripts/download_sequences.py (UniProt REST)
+  - numpy>=1.26        # seed_strategy: random
+  - pip
+  - pip:
+      - abcfold>=0.1    # provides the `mmseqs2msa` CLI entry point
