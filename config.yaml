@@ -36,7 +36,7 @@ af3:
   dialect: "alphafold3"             # fold_input.json JSON dialect (unchanged name: ABCfold expects this key)
   json_version: 1                   # fold_input.json schema "version" field
 
-  n_replicas: 5                     # j — independent seeds per protein x form
+  n_replicas: 20                     # j — independent seeds per protein x form
   seed_strategy: "random"           # "sequential" | "random"
   seed_base: 1                      # only used when seed_strategy: sequential
   random_master_seed: 0             # only used when seed_strategy: random
