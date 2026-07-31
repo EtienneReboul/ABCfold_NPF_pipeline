@@ -55,6 +55,18 @@ mmseqs2:
   delay: 8                          # seconds between per-protein webserver calls (politeness)
   retries: 3                        # outer retry loop around each mmseqs2msa call
 
+  # Jump-start: reuse NPF_pocket_pipeline's already-fetched default-run MSA
+  # (data/msa/a3m/{protein}.a3m) + top-hit templates (data/msa/pdb/{protein}.m8
+  # + data/templates/default/{protein}/*.cif) instead of re-querying the
+  # ColabFold webserver for any protein it already covers — same webserver,
+  # same query, same result, no network round trip or rate limiting needed.
+  # scripts/fetch_mmseqs2_msa.py falls back to the live `mmseqs2msa` webserver
+  # call for any protein not found there. Templates beyond what the sibling
+  # cached (its default_run.top_n) are topped up with a plain RCSB download
+  # (no MMseqs2 webserver hit) up to num_templates above. Set "" to disable
+  # local reuse entirely.
+  pocket_pipeline_dir: "../NPF_pocket_pipeline"
+
 # ── Stage 4: ABCfold run ──────────────────────────────────────────────────────
 # Model letters map 1:1 onto ABCfold's CLI flags (-a/-b/-c/-o/-p/-r); see
 # worflows/processing/submit_abcfold.sh. Every model below is run TOGETHER in

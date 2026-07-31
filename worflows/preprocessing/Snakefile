@@ -273,6 +273,7 @@ rule fetch_mmseqs2_msa:
         num_templates=MMSEQS_CFG["num_templates"],
         retries=MMSEQS_CFG["retries"],
         delay=MMSEQS_CFG["delay"],
+        pocket_pipeline_dir=MMSEQS_CFG.get("pocket_pipeline_dir", ""),
     shell:
         """
         python scripts/fetch_mmseqs2_msa.py \\
@@ -281,6 +282,7 @@ rule fetch_mmseqs2_msa:
         --num-templates {params.num_templates} \\
         --retries {params.retries} \\
         --delay {params.delay} \\
+        --pocket-pipeline-dir '{params.pocket_pipeline_dir}' \\
         >{log} 2>&1
         """
 
