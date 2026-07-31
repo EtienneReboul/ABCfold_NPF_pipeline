@@ -37,8 +37,8 @@ af3:
   json_version: 1                   # fold_input.json schema "version" field
 
   n_replicas: 5                     # j — independent seeds per protein x form
-  seed_strategy: "sequential"       # "sequential" | "random"
-  seed_base: 1
+  seed_strategy: "random"           # "sequential" | "random"
+  seed_base: 1                      # only used when seed_strategy: sequential
   random_master_seed: 0             # only used when seed_strategy: random
 
 # ── Stage 3: MMseqs2 "default run" — MSA + templates from the ColabFold ─────
@@ -89,7 +89,7 @@ abcfold:
   af3_sif_path: ""                  # override only — empty = auto-discover from the module wrapper above
 
   number_of_models: 5               # AF3 --num_diffusion_samples-equivalent (ABCfold's number_of_models)
-  num_recycles: 10                  # AF3 recycles (ignored by OpenFold3 — see ABCfold README)
+  num_recycles: 25                 # AF3 recycles (ignored by OpenFold3 — see ABCfold README)
 
   # Every other backend (Boltz, Chai-1, OpenFold3, Protenix, RosettaFold3) is
   # auto-installed by ABCfold into internal micromamba environments the FIRST
