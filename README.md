@@ -246,18 +246,18 @@ get started.
 
 ## Key configuration options (`config.yaml`)
 
-| Key                          | Description                                                                        |
-| ----------------------------- | ----------------------------------------------------------------------------------- |
-| `af3.n_replicas`             | j — independent seeds per protein x form (each seed runs through all 6 backends) |
-| `mmseqs2.num_templates`      | Top-hit templates fetched per protein by `mmseqs2msa` (default run, no curation) |
-| `abcfold.models`             | Which of the 6 backends to run together (maps to `-a -b -c -o -p -r`)             |
-| `abcfold.model_params`       | AlphaFold3 weights directory                                                       |
-| `abcfold.af3_module_version` | Version component of IFB's `alphafold` module/wrapper path, used for auto-discovery |
-| `abcfold.af3_sif_path`       | Override only — leave empty to auto-discover from the module wrapper above       |
-| `abcfold.number_of_models`   | Models generated per backend per call (`--number_of_models`)                     |
-| `abcfold.num_recycles`       | Recycles per backend call (`--num_recycles`; ignored by OpenFold3)                |
-| `deeptmhmm.expected_tm`      | required TM helix count per protein (12 for NPF/MFS)                               |
-| `tm_alignment.n_iter`        | Procrustes iterations for the converged mean TM structure                          |
+| Key                            | Description                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------ |
+| `af3.n_replicas`             | j — independent seeds per protein x form (each seed runs through all 6 backends)    |
+| `mmseqs2.num_templates`      | Top-hit templates fetched per protein by`mmseqs2msa` (default run, no curation)    |
+| `abcfold.models`             | Which of the 6 backends to run together (maps to`-a -b -c -o -p -r`)               |
+| `abcfold.model_params`       | AlphaFold3 weights directory                                                         |
+| `abcfold.af3_module_version` | Version component of IFB's`alphafold` module/wrapper path, used for auto-discovery |
+| `abcfold.af3_sif_path`       | Override only — leave empty to auto-discover from the module wrapper above          |
+| `abcfold.number_of_models`   | Models generated per backend per call (`--number_of_models`)                       |
+| `abcfold.num_recycles`       | Recycles per backend call (`--num_recycles`; ignored by OpenFold3)                 |
+| `deeptmhmm.expected_tm`      | required TM helix count per protein (12 for NPF/MFS)                                 |
+| `tm_alignment.n_iter`        | Procrustes iterations for the converged mean TM structure                            |
 
 ## Resuming
 
@@ -275,12 +275,12 @@ get started.
 
 ## Troubleshooting
 
-| Symptom                                                | Fix                                                                                                                                   |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `abcfold: command not found`                          | `envs/pipeline.yaml`/`envs/preprocessing.yaml` env not activated, or `python -m pip install abcfold` not yet run on the cluster node |
-| `mmseqs2msa not found on PATH`                        | Install the `abcfold` package into `envs/preprocessing.yaml`'s env (`pip install abcfold`)                                          |
-| AF3 backend fails with a Docker error on the cluster   | `discover_af3_sif()` in `submit_abcfold.sh` failed to find IFB's `.sif` — check `/shared/software/singularity/wrappers/alphafold/$AF3_MODULE_VERSION/run_alphafold.py` still exists and still references a `.sif`, then set `AF3_SIF_PATH` manually if needed |
-| `singularity: command not found` on the compute node   | The `singularity` module failed to load — check `module avail singularity` on IFB |
-| Boltz/Chai-1/OpenFold3/Protenix/RosettaFold3 fail to install mid-array | Run `bash submit_abcfold.sh --prime` on a login node (internet) first — compute nodes usually can't install anything          |
-| `tm_helix_alignment.py` finds 0 CIFs                  | ABCfold's local output layout may not match `BACKEND_PATTERNS`/`discover_predictions()` — inspect `results/abcfold/<protein>/` and adjust |
-| `No TM topology found for <protein>`                  | DeepTMHMM predicted something other than 12 TM helices — inspect `data/interpro/deeptmhmm_TMRs.gff3`, or adjust `deeptmhmm.expected_tm` |
+| Symptom                                                                | Fix                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `abcfold: command not found`                                         | `envs/pipeline.yaml`/`envs/preprocessing.yaml` env not activated, or `python -m pip install abcfold` not yet run on the cluster node                                                                                                                                 |
+| `mmseqs2msa not found on PATH`                                       | Install the`abcfold` package into `envs/preprocessing.yaml`'s env (`pip install abcfold`)                                                                                                                                                                            |
+| AF3 backend fails with a Docker error on the cluster                   | `discover_af3_sif()` in `submit_abcfold.sh` failed to find IFB's `.sif` — check `/shared/software/singularity/wrappers/alphafold/$AF3_MODULE_VERSION/run_alphafold.py` still exists and still references a `.sif`, then set `AF3_SIF_PATH` manually if needed |
+| `singularity: command not found` on the compute node                 | The`singularity` module failed to load — check `module avail singularity` on IFB                                                                                                                                                                                      |
+| Boltz/Chai-1/OpenFold3/Protenix/RosettaFold3 fail to install mid-array | Run`bash submit_abcfold.sh --prime` on a login node (internet) first — compute nodes usually can't install anything                                                                                                                                                     |
+| `tm_helix_alignment.py` finds 0 CIFs                                 | ABCfold's local output layout may not match`BACKEND_PATTERNS`/`discover_predictions()` — inspect `results/abcfold/<protein>/` and adjust                                                                                                                            |
+| `No TM topology found for <protein>`                                 | DeepTMHMM predicted something other than 12 TM helices — inspect`data/interpro/deeptmhmm_TMRs.gff3`, or adjust `deeptmhmm.expected_tm`                                                                                                                                |
