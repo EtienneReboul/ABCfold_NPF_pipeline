@@ -32,7 +32,7 @@ scripts/run_deeptmhmm_topology.py).
 Outputs, written to results/tm_alignment/<protein>/:
   - aligned_ca.npy    — float32 (n_frames, n_ca_full, 3), whole-chain Cα, aligned
   - aligned_ca_tm.npy — float32 (n_frames, n_ca_tm, 3), TM-only Cα, aligned
-  - meta.csv          — model, seed, sample_index, ptm, rmsd_tm, rmsd_full per frame
+  - meta.csv          — model, seed, sample_index, ptm, iptm, rmsd_tm, rmsd_full per frame
   - resids.csv        — resid, in_tm, tm_index residue-level TM membership
 
 Usage (called by Snakemake rule `tm_helix_alignment`, one protein at a time):
@@ -158,26 +158,127 @@ def parse_frame_id(cif_path: Path, predictions_dir: Path) -> dict:
     return {"model": model, "seed": seed, "sample_index": sample_index, "frame_id": frame_id}
 
 
-def find_confidence(cif_path: Path) -> float:
-    """Best-effort pTM lookup from a confidence/score JSON sibling of a
-    model CIF. Naming varies across ABCfold's 6 backends, so several
-    candidates are tried; returns NaN if none are found or parseable."""
-    stem = cif_path.stem
-    candidates = [
-        cif_path.with_name(f"{stem}_confidences.json"),
-        cif_path.with_name(f"{stem}_summary_confidences.json"),
-        cif_path.with_name(re.sub(r"model", "confidences", stem) + ".json"),
-        cif_path.with_name(re.sub(r"model", "summary_confidences", stem) + ".json"),
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            try:
-                data = json.loads(candidate.read_text())
-                return float(data.get("ptm", data.get("confidence_score",
-                             data.get("ranking_score", float("nan")))))
-            except Exception:
-                continue
-    return float("nan")
+def _as_float(value) -> float:
+    if value is None:
+        return float("nan")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _strip_model_suffix(stem: str) -> str:
+    """'<base>_model' / '<base>_model_fixed' -> '<base>' (AlphaFold3,
+    RosettaFold3 and OpenFold3 all write a same-named confidence file next
+    to the cif with the '_model'/'_model_fixed' suffix removed)."""
+    return re.sub(r"_model(_fixed)?$", "", stem)
+
+
+def _confidence_af3_style(cif_path: Path) -> tuple[float, float]:
+    """AlphaFold3 and RosettaFold3 write one '<base>_summary_confidences.json'
+    per sample, shared by both the '_model.cif' and '_model_fixed.cif'
+    variants of that sample (confirmed against a real run of each:
+    results/abcfold/<protein>/{alphafold3,rosettafold}_<protein>/.../
+    <base>_summary_confidences.json, top-level keys 'ptm'/'iptm').
+
+    On a single-chain (apoform) run, AF3 writes 'iptm': null (no interface
+    to score) -- correctly propagated here as NaN, not a bug. The other 5
+    backends report 0.0 for the same no-interface case instead; this
+    finder doesn't paper over that cross-backend inconsistency."""
+    base = _strip_model_suffix(cif_path.stem)
+    candidate = cif_path.with_name(f"{base}_summary_confidences.json")
+    if not candidate.exists():
+        return float("nan"), float("nan")
+    data = json.loads(candidate.read_text())
+    return _as_float(data.get("ptm")), _as_float(data.get("iptm"))
+
+
+def _confidence_boltz(cif_path: Path) -> tuple[float, float]:
+    """Boltz writes 'confidence_<cif_stem>.json' (prefixed, not suffixed --
+    confirmed: .../predictions/<name>/confidence_<name>_model_N.json next to
+    <name>_model_N.cif), top-level keys 'ptm'/'iptm'."""
+    candidate = cif_path.with_name(f"confidence_{cif_path.stem}.json")
+    if not candidate.exists():
+        return float("nan"), float("nan")
+    data = json.loads(candidate.read_text())
+    return _as_float(data.get("ptm")), _as_float(data.get("iptm"))
+
+
+def _confidence_chai1(cif_path: Path) -> tuple[float, float]:
+    """Chai-1 stores confidence in a NumPy .npz sibling, not JSON: 'pred.
+    model_idx_N.cif' pairs with 'scores.model_idx_N.npz', with flat 'ptm'/
+    'iptm' float arrays (confirmed against a real run)."""
+    candidate = cif_path.with_name(cif_path.name.replace("pred.", "scores.", 1)).with_suffix(".npz")
+    if not candidate.exists():
+        return float("nan"), float("nan")
+    with np.load(candidate) as data:
+        ptm = _as_float(data["ptm"][0]) if "ptm" in data.files else float("nan")
+        iptm = _as_float(data["iptm"][0]) if "iptm" in data.files else float("nan")
+    return ptm, iptm
+
+
+def _confidence_openfold3(cif_path: Path) -> tuple[float, float]:
+    """OpenFold3 writes '<base>_confidences_aggregated.json' (base = the
+    sample name with the '_model'/'_model_fixed' cif suffix stripped, e.g.
+    '..._sample_1_confidences_aggregated.json' next to
+    '..._sample_1_model.cif'), top-level keys 'ptm'/'iptm'. The plain
+    '<base>_confidences.json' sibling (also written) only has raw per-atom
+    pae/plddt arrays, no scalar ptm/iptm."""
+    base = _strip_model_suffix(cif_path.stem)
+    candidate = cif_path.with_name(f"{base}_confidences_aggregated.json")
+    if not candidate.exists():
+        return float("nan"), float("nan")
+    data = json.loads(candidate.read_text())
+    return _as_float(data.get("ptm")), _as_float(data.get("iptm"))
+
+
+def _confidence_protenix(cif_path: Path) -> tuple[float, float]:
+    """Protenix writes '<base>_summary_confidence_sample_N.json' next to
+    '<base>_sample_N.cif' (summary_confidence_ inserted before sample_N,
+    not appended), top-level keys 'ptm'/'iptm'."""
+    m = re.match(r"(.+)_sample_(\d+)$", cif_path.stem)
+    if not m:
+        return float("nan"), float("nan")
+    base, n = m.groups()
+    candidate = cif_path.with_name(f"{base}_summary_confidence_sample_{n}.json")
+    if not candidate.exists():
+        return float("nan"), float("nan")
+    data = json.loads(candidate.read_text())
+    return _as_float(data.get("ptm")), _as_float(data.get("iptm"))
+
+
+CONFIDENCE_FINDERS = {
+    "alphafold3":   _confidence_af3_style,
+    "rosettafold3": _confidence_af3_style,
+    "boltz":        _confidence_boltz,
+    "chai1":        _confidence_chai1,
+    "openfold3":    _confidence_openfold3,
+    "protenix":     _confidence_protenix,
+}
+
+_WARNED_BACKENDS: set[str] = set()
+
+
+def find_confidence(cif_path: Path, model: str) -> tuple[float, float]:
+    """(ptm, iptm) for one model CIF, using the backend-specific confidence
+    file layout each of ABCfold's 6 backends writes (see CONFIDENCE_FINDERS
+    above -- each entry confirmed against a real run's on-disk output, not
+    guessed from source). Returns (NaN, NaN) if the confidence file is
+    missing or unparseable; warns at most once per backend, not once per
+    frame, so a systematic layout mismatch doesn't flood stdout."""
+    finder = CONFIDENCE_FINDERS.get(model)
+    if finder is None:
+        if model not in _WARNED_BACKENDS:
+            print(f"[align] WARNING: no confidence finder for backend {model!r} - ptm/iptm will be NaN")
+            _WARNED_BACKENDS.add(model)
+        return float("nan"), float("nan")
+    try:
+        return finder(cif_path)
+    except Exception as e:
+        if model not in _WARNED_BACKENDS:
+            print(f"[align] WARNING: confidence lookup failed for backend {model!r} ({e}) - ptm/iptm will be NaN")
+            _WARNED_BACKENDS.add(model)
+        return float("nan"), float("nan")
 
 
 def longest_chain_name(model) -> str:
@@ -263,13 +364,15 @@ def align_protein(protein: str, abcfold_output_root: Path, topology: dict,
         full_frames.append(coords)
         tm_frames.append(coords[tm_mask])
         by_model_count[frame_info["model"]] = by_model_count.get(frame_info["model"], 0) + 1
+        ptm, iptm = find_confidence(cif, frame_info["model"])
         meta_rows.append({
             "protein": protein,
             "model": frame_info["model"],
             "seed": frame_info["seed"],
             "sample_index": frame_info["sample_index"],
             "frame_id": frame_info["frame_id"],
-            "ptm": find_confidence(cif),
+            "ptm": ptm,
+            "iptm": iptm,
         })
 
     n_used = len(full_frames)
