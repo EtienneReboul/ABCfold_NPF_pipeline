@@ -13,5 +13,7 @@ dependencies:
   - kneed>=0.8            # BIC-knee detection for GMM auto-k
   - optuna>=3.6           # TPE search for HDBSCAN hyperparameters, scored by DBCV
   - hdbscan>=0.8           # validity_index (DBCV) for HDBSCAN tuning
+  - ipywidgets>=8.0        # click-to-reveal-in-Finder callbacks on FigureWidget traces
   - pip:
       - kaleido>=0.2       # static PNG export for plotly figures
+      - anywidget>=0.9     # plotly>=6 needs this for go.FigureWidget (formerly ipywidgets-native)
