@@ -201,6 +201,18 @@ GRES="gpu:l40s:1"
 TIME=600                  # minutes per task
 ACCOUNT=""
 
+# Nodes with confirmed infra issues mid-array-run (not a pipeline bug):
+#   gpu-node-7  2026-08-06  /tmp scratch vanished mid-job (libmamba
+#               "temp_directory_path" filesystem error) during a backend's
+#               on-demand env bootstrap -- crashed abcfold entirely.
+#   gpu-node-9  2026-08-06  GPU became unusable mid-job -- Protenix got
+#               "input must be a CUDA tensor", RosettaFold3 fell back to
+#               CPU ("No GPUs/XPUs available") and never finished within
+#               the 10h time limit.
+# Excluded by default; override with --exclude-nodes (empty string to
+# stop excluding, once/if IFB confirms these are healthy again).
+EXCLUDE_NODES="gpu-node-7,gpu-node-9"
+
 FOLD_IN_DIR="data/fold_inputs"
 ABCFOLD_OUT_DIR="results/abcfold"
 PRIORITY_MANIFEST="$FOLD_IN_DIR/priority_gibberellin.txt"
@@ -232,13 +244,17 @@ while [[ $# -gt 0 ]]; do
             MAX_CONCURRENT="$2"; shift 2 ;;
         --max-concurrent=*)
             MAX_CONCURRENT="${1#--max-concurrent=}"; shift ;;
+        --exclude-nodes)
+            EXCLUDE_NODES="$2"; shift 2 ;;
+        --exclude-nodes=*)
+            EXCLUDE_NODES="${1#--exclude-nodes=}"; shift ;;
         --test)
             TEST_MODE=true; shift ;;
         *)
             echo "ERROR: unknown argument '$1'"
             echo "Usage: bash submit_abcfold.sh [--prime] [--dry-run] [--test] [--gres <profile>]"
             echo "                              [--models abcopr] [--batch-size N]"
-            echo "                              [--max-concurrent N]"
+            echo "                              [--max-concurrent N] [--exclude-nodes node1,node2]"
             exit 1 ;;
     esac
 done
@@ -352,6 +368,7 @@ echo " Batch size              : $BATCH_SIZE run(s)/task"
 echo " Array tasks              : $N_TASKS  (--array=${ARRAY_SPEC})"
 echo " Max concurrent           : $MAX_CONCURRENT"
 echo " GRES                     : $GRES"
+echo " Excluded nodes           : ${EXCLUDE_NODES:-(none)}"
 echo " Time limit/task          : ${TIME} min"
 if $DRY_RUN; then
     echo " Mode                     : DRY RUN (nothing submitted)"
@@ -424,6 +441,9 @@ fi
 ACCOUNT_FLAG=""
 [[ -n "$ACCOUNT" ]] && ACCOUNT_FLAG="--account=$ACCOUNT"
 
+EXCLUDE_FLAG=""
+[[ -n "$EXCLUDE_NODES" ]] && EXCLUDE_FLAG="--exclude=$EXCLUDE_NODES"
+
 sbatch \
     --partition="$PARTITION" \
     --nodes=1 \
@@ -434,6 +454,7 @@ sbatch \
     --time="$TIME" \
     --array="${ARRAY_SPEC}" \
     $ACCOUNT_FLAG \
+    $EXCLUDE_FLAG \
     --job-name="abcfold_array" \
     --output="$LOG_DIR/task_%a.log" \
     --error="$LOG_DIR/task_%a.err" \
