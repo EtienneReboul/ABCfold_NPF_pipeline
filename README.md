@@ -272,6 +272,19 @@ get started.
   the whole `abcfold` call reruns from scratch (see the note in step 4).
 - To force-rerun TM alignment for one protein x form, delete
   `results/tm_alignment/<protein>__{apo,holo}/`.
+- To backfill just ONE backend for a run that already has the other 5
+  (e.g. a backend bootstrap bug fixed after that run's `abcfold` call
+  already completed for the rest) — **do not** call `abcfold <json>
+  results/abcfold/<run> -<letter> --override` in place. Confirmed via a
+  real run (RosettaFold3 backfill for `NPF2.10_Q944G5__apo`, 2026-08-06):
+  `--override` doesn't scope to the backend(s) actually selected — it wipes
+  the *entire* output directory first, deleting the other 5 backends'
+  folders and `prediction.done` too. Recovered that one from a local rsync
+  backup taken before the run; nothing was permanently lost, but the
+  in-place approach must not be reused. Instead, run the missing backend
+  into a disposable scratch directory, then `cp -r` only the resulting
+  `<backend>_<run>/` folder into the real `results/abcfold/<run>/` —
+  `worflows/processing/backfill_rosettafold3_safe.sh` does exactly this.
 
 ## Troubleshooting
 
@@ -284,3 +297,4 @@ get started.
 | Boltz/Chai-1/OpenFold3/Protenix/RosettaFold3 fail to install mid-array | Run`bash submit_abcfold.sh --prime` on a login node (internet) first — compute nodes usually can't install anything                                                                                                                                                     |
 | `tm_helix_alignment.py` finds 0 CIFs                                 | ABCfold's local output layout may not match`BACKEND_PATTERNS`/`discover_predictions()` — inspect `results/abcfold/<protein>/` and adjust                                                                                                                            |
 | `No TM topology found for <protein>`                                 | DeepTMHMM predicted something other than 12 TM helices — inspect`data/interpro/deeptmhmm_TMRs.gff3`, or adjust `deeptmhmm.expected_tm`                                                                                                                                |
+| Backfilling one backend in place deletes the other 5 backends' output  | `abcfold ... -<letter> --override` wipes the whole output directory, not just that backend's subfolder (confirmed 2026-08-06) — see "Resuming" above; use `backfill_rosettafold3_safe.sh`'s scratch-dir-then-merge pattern instead                                    |
