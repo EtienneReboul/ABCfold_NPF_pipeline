@@ -9,7 +9,6 @@ dependencies:
   - numpy>=1.26
   - scikit-learn>=1.4    # PCA, GaussianMixture, HDBSCAN
   - plotly>=5.20          # interactive scatter plots — color_by="model" to compare backends
-  - umap-learn>=0.5       # UMAP embedding of the aligned TM-Cα ensemble
   - kneed>=0.8            # BIC-knee detection for GMM auto-k
   - optuna>=3.6           # TPE search for HDBSCAN hyperparameters, scored by DBCV
   - hdbscan>=0.8           # validity_index (DBCV) for HDBSCAN tuning
