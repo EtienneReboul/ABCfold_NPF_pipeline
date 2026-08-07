@@ -48,8 +48,11 @@
 #   only in worflows/postprocessing/Snakefile afterward, is the whole point:
 #   ~20x fewer bytes and ~35x fewer files to rsync back, and it keeps IFB's
 #   per-user file-count quota from being the thing that fails a large batch.
-#   Needs its own env, created once (also needs internet — login node):
-#     micromamba env create -f envs/metadata_compress.yaml
+#   Needs its own conda env (regular conda, not ABCfold's internal micromamba
+#   ones above — IFB's ~/.condarc envs_dirs points at
+#   /shared/projects/npf_abinitio/conda/envs, same place as
+#   abcfold-npf-pipeline etc.), created once (also needs internet — login node):
+#     module load conda && conda env create -n metadata-compress -f envs/metadata_compress.yaml
 #   A run whose compression fails/times out on the cluster is NOT stuck: its
 #   raw files are simply left in place (compress_abcfold_metadata.py only
 #   deletes originals after verifying its own output, and only once every
@@ -64,9 +67,10 @@
 #   - worflows/preprocessing/Snakefile completed (fold_input.resolved.json exists per run)
 #   - Run from the pipeline root directory
 #   - micromamba available on $PATH (ABCfold requires it to build backend envs)
-#   - `module load singularity` works (loaded automatically below)
+#   - `module load singularity` and `module load conda` both work (loaded automatically below)
 #   - `bash submit_abcfold.sh --prime` has completed successfully at least once
-#   - `micromamba env create -f envs/metadata_compress.yaml` has completed at least once
+#   - `module load conda && conda env create -n metadata-compress -f envs/metadata_compress.yaml`
+#     has completed at least once
 #
 # Flags below (--number_of_models, --num_recycles, --model_params,
 # --af3_sif_path, --override, --no_server, --no_visuals) are confirmed
@@ -327,14 +331,22 @@ if [[ -z "$AF3_SIF_PATH" ]] && [[ "$MODEL_FLAG" == *a* ]]; then
     echo "         /shared/software/singularity/wrappers/alphafold/$AF3_MODULE_VERSION/run_alphafold.py"
     echo "         still exists and still references a .sif file."
 fi
-if ! micromamba env list 2>/dev/null | grep -qE "(^|/)${METADATA_ENV}\$"; then
-    echo "WARNING: micromamba env '$METADATA_ENV' not found — each array task's"
+# Direct directory check (not `module load conda && conda env list`): this
+# runs as part of the plain `bash submit_abcfold.sh` invocation, which per
+# IFB's setup doesn't reliably have the `module` function available outside
+# an interactive login shell (confirmed 2026-08-07 — bare `ssh host "module
+# load conda"` fails with "command not found", `ssh host "bash -lc "module
+# load conda""` succeeds) — this hardcodes the same envs_dirs IFB's
+# ~/.condarc already points at (matching every other project env, e.g.
+# .../conda/envs/abcfold-npf-pipeline), so it works regardless.
+if [[ ! -d "/shared/projects/npf_abinitio/conda/envs/${METADATA_ENV}" ]]; then
+    echo "WARNING: conda env '$METADATA_ENV' not found — each array task's"
     echo "         post-prediction compression step (scripts/compress_abcfold_metadata.py)"
     echo "         will fail and fall back to leaving results/abcfold/<run>/ raw"
     echo "         (harmless — worflows/postprocessing/Snakefile compresses it locally"
     echo "         later instead — but you lose the rsync/quota benefit on the cluster"
     echo "         side). Fix once, on a login node:"
-    echo "           micromamba env create -f envs/metadata_compress.yaml"
+    echo "           module load conda && conda env create -n $METADATA_ENV -f envs/metadata_compress.yaml"
 fi
 
 # ── Collect pending runs, Gibberellin (GA1) importers first ──────────────────
@@ -558,8 +570,17 @@ while IFS='|' read -r json out_dir done_file; do
     # above): raw files are simply left as-is and
     # worflows/postprocessing/Snakefile's compress_abcfold_metadata rule
     # compresses this run locally instead, next time that Snakefile runs.
+    #
+    # Invoked by resolved python path, not \`conda run -n\`/\`conda activate\`:
+    # this loop runs \`abcfold\` again next iteration in this SAME shell, and
+    # sourcing conda's activation hook here would mutate PATH for the rest
+    # of the task's lifetime — resolving straight to the env's own
+    # interpreter (IFB's ~/.condarc envs_dirs -> /shared/projects/npf_abinitio/
+    # conda/envs/\$METADATA_ENV, same place every other project env lives)
+    # touches nothing else in this shell.
+    METADATA_PYTHON="/shared/projects/npf_abinitio/conda/envs/\$METADATA_ENV/bin/python3"
     echo "[\$(date)] COMPRESS: \$protein"
-    if micromamba run -n "\$METADATA_ENV" python3 scripts/compress_abcfold_metadata.py \\
+    if [[ -x "\$METADATA_PYTHON" ]] && "\$METADATA_PYTHON" scripts/compress_abcfold_metadata.py \\
             --protein "\$protein" \\
             --abcfold-output-root "\$ABCFOLD_OUT_DIR" \\
             --out-root "\$METADATA_OUT_DIR" \\
@@ -567,7 +588,7 @@ while IFS='|' read -r json out_dir done_file; do
             --skip-merge; then
         echo "[\$(date)] COMPRESS OK: \$protein"
     else
-        echo "[\$(date)] WARNING: compression failed for \$protein — raw results/abcfold/\$protein/ left as-is, will be compressed locally by worflows/postprocessing/Snakefile instead"
+        echo "[\$(date)] WARNING: compression failed for \$protein (missing env at \$METADATA_PYTHON, or the script itself failed) — raw results/abcfold/\$protein/ left as-is, will be compressed locally by worflows/postprocessing/Snakefile instead"
     fi
     echo ""
 
