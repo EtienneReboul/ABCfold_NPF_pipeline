@@ -54,6 +54,8 @@
 \setbeamercolor{itemize item}{fg=accent}
 \setbeamercolor{itemize subitem}{fg=accent}
 \setbeamercolor{enumerate item}{fg=accent}
+\setbeamertemplate{itemize item}[circle]
+\setbeamertemplate{itemize subitem}[circle]
 \setbeamercolor{section in toc}{fg=fgtext}
 \setbeamercolor{page number in head/foot}{fg=muted}
 \setbeamerfont{frametitle}{series=\bfseries}
@@ -66,7 +68,22 @@
     \end{beamercolorbox}%
   }%
 }
-\setbeamertemplate{itemize/enumerate body begin}{\setlength{\itemsep}{40em}}
+% NOTE: \setbeamertemplate{itemize/enumerate body begin} does NOT control
+% \itemsep in this beamer/theme combo (verified: even 40em had zero visual
+% effect and zero overflow). Patching \@listi/\@listii directly -- the real
+% LaTeX list-level macros -- is what actually works; \g@addto@macro appends
+% our overrides without disturbing their existing leftmargin/etc.
+% \itemsep spaces siblings apart (e.g. 1.1 <-> 1.2); \topsep spaces a nested
+% list from its parent item (e.g. "1." <-> "1.1", and "1.2" <-> "2.").
+% Also: beamer resets \@listi (depth 1 only, not \@listii) at
+% \begin{document}, silently wiping a preamble-time patch -- wrapping ours
+% in \AtBeginDocument makes it run after that reset instead of before it.
+\makeatletter
+\AtBeginDocument{%
+  \g@addto@macro{\@listi}{\setlength{\itemsep}{1em}\setlength{\topsep}{1em}}
+  \g@addto@macro{\@listii}{\setlength{\itemsep}{1em}\setlength{\topsep}{1em}}
+}
+\makeatother
 \setbeamertemplate{sections/subsections in toc}[sections numbered]
 
 \title{ABCfold NPF Conformation Pipeline}
@@ -100,44 +117,89 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
 % ---------------------------------------------------------------------
 
 \begin{frame}{Gibberellins}
-  \begin{columns}[T]
+  \begin{columns}[c]
     \begin{column}{0.55\textwidth}
       \begin{itemize}
         \item Key phytohormone in plants; isolated in 1931 from
           \textit{Gibberella fujikuroi} (fungus), later found in plants
           (1950)
-        \item Promotes growth and development: stem elongation, seed
-          germination, flowering
-        \item GA-deficiency mutants (key oxidase disrupted): smaller but
-          more resilient, \textbf{higher grain yield}
+        \item Promotes growth and development:
+          \begin{itemize}
+            \item Stem elongation
+            \item Seed germination
+            \item Flowering
+          \end{itemize}
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \centering
+      \includegraphics[width=\textwidth]{Gibberellin-A1.png}\\[0.3em]
+      {\footnotesize Gibberellin A1 -- C\textsubscript{19}H\textsubscript{24}O\textsubscript{6},
+      348.4~g/mol (PubChem CID 5280379)}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Gibberellins -- growth effect}
+  \begin{columns}[c]
+    \begin{column}{0.55\textwidth}
+      \begin{itemize}
+        \item GA-deficiency mutants (key oxidase disrupted):
+          \begin{itemize}
+            \item Smaller but more resilient
+            \item \textbf{Higher grain yield}
+          \end{itemize}
         \item[$\Rightarrow$] GA-deficiency-linked yield gains underpinned
           the \textbf{Green Revolution} (1970s)
       \end{itemize}
     \end{column}
     \begin{column}{0.42\textwidth}
       \centering
-      \includegraphics[width=\textwidth]{Gibberellin-A1.png}\\[0.3em]
-      {\footnotesize Gibberellin A1 --- C\textsubscript{19}H\textsubscript{24}O\textsubscript{6},
-      348.4~g/mol (PubChem CID 5280379)}
+      \includegraphics[width=0.75\textwidth]{gibberellin-effect.pdf}\\[0.2em]
+      {\scriptsize (1) No gibberellins: dwarf, no internode elongation.
+      (2) Average gibberellins: average internode length.
+      (3) High gibberellins: long internode length, more stem cell
+      division.\\[0.3em]
+      Lee Spahr, \textit{The effect of Gibberellins}, CC BY-SA 3.0,
+      via Wikimedia Commons (recolored for contrast)}
     \end{column}
   \end{columns}
 \end{frame}
 
 \begin{frame}{Nitrate and Peptide Transporters (NPF)}
-  \begin{itemize}
-    \item Part of the \textbf{Major Facilitator Superfamily (MFS)} of
-      membrane transporters
-    \item Transport nitrate (NO\textsubscript{3}\textsuperscript{-}),
-      dipeptides, and gibberellins
-    \item Tissue- and substrate-specific
-  \end{itemize}
-  % TODO: figure -- NPF tissue localization diagram (Morales de los Rios et al., 2025)
-  % \includegraphics[width=0.5\textwidth]{npf_tissue_localization.png}
+  \begin{columns}[c]
+    \begin{column}{0.46\textwidth}
+      \setlength{\leftmargini}{1.1em}\setlength{\leftmarginii}{1.1em}
+      \hspace{-0.6em}%
+      \begin{itemize}
+        \setlength{\itemsep}{0.4em}\setlength{\topsep}{0.4em}
+        \item Part of the \textbf{Major Facilitator Superfamily (MFS)}
+          of membrane transporters
+        \item Transport:
+          \begin{itemize}
+            \setlength{\itemsep}{0.4em}\setlength{\topsep}{0.4em}
+            \item Nitrate (NO\textsubscript{3}\textsuperscript{-})
+            \item Dipeptides
+            \item Gibberellins
+          \end{itemize}
+        \item Specific to tissue and substrate
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.52\textwidth}
+      \centering
+      \colorbox{white}{\includegraphics[width=0.76\textwidth]{NPF_tissue_distribution.jpg}}\\[0.1em]
+      {\tiny Tissue localization and function of characterized NPFs in
+      \textit{Arabidopsis thaliana}; located in the plasma membrane
+      unless otherwise indicated. NA, nicotianamine.\\
+      Morales de los Ríos \textit{et al.}, \textit{New Phytologist}, CC
+      BY 4.0. DOI:10.1111/nph.70730}
+    \end{column}
+  \end{columns}
 \end{frame}
 
 \begin{frame}{MFS transport cycle: six conformations}
   \footnotesize Alternating-access mechanism: transport requires passing
-  through a fully \textbf{occluded} intermediate in either direction ---
+  through a fully \textbf{occluded} intermediate in either direction --
   the \textbf{biological reason} the pipeline targets six conformations
   per protein, not six independent opinions on one.
 
@@ -171,7 +233,7 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
   \end{center}
 
   {\tiny\color{muted} Redrawn after Drew \textit{et al.}, \textit{Chem.\
-  Rev.} 2021, 121, 5289--5335 (Fig.\ 8a), CC BY-NC-ND 4.0 ---
+  Rev.} 2021, 121, 5289--5335 (Fig.\ 8a), CC BY-NC-ND 4.0 --
   DOI:10.1021/acs.chemrev.0c00983}
 \end{frame}
 
@@ -180,8 +242,11 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
     \begin{column}{0.55\textwidth}
       \begin{itemize}
         \item Only \textbf{2 NPFs} have experimentally resolved
-          structures: NPF6.3 (4OH3, 5A2N, 5A2O), NPF2.10 (9UI1, 9UI6,
-          9UIF, 9UIT)
+          structures:
+          \begin{itemize}
+            \item NPF6.3 (4OH3, 5A2N, 5A2O)
+            \item NPF2.10 (9UI1, 9UI6, 9UIF, 9UIT)
+          \end{itemize}
         \item Only \textbf{importers} are well characterized in the
           literature (technical constraints)
         \item \textbf{Exporters} remain unidentified
@@ -190,7 +255,7 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
     \begin{column}{0.4\textwidth}
       \centering
       \includegraphics[width=0.8\textwidth]{4OH3-crop.png}\\[0.3em]
-      {\footnotesize NPF6.3 --- PDB 4OH3, X-ray, 3.25~\AA\\
+      {\footnotesize NPF6.3 -- PDB 4OH3, X-ray, 3.25~\AA\\
       Sun \textit{et al.}, \textit{Nature} 2014}
     \end{column}
   \end{columns}
@@ -233,7 +298,7 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
     \item Overlaying those ensembles with Boltz-2 (Gibberellin importers,
       8 proteins) showed: AF3 alone \textbf{does not} recover every
       conformation a second, architecturally-different model finds
-    \item[$\Rightarrow$] One model isn't enough --- run \textbf{six together}
+    \item[$\Rightarrow$] One model isn't enough -- run \textbf{six together}
       instead of resampling one
   \end{itemize}
 \end{frame}
@@ -290,17 +355,17 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
 
 \begin{frame}{Stage 1--3: from sequence to resolved fold input}
   \begin{enumerate}
-    \item \textbf{Sequences} --- UniProt $\to$ per-protein FASTA
-    \item \textbf{Fold input} --- \texttt{fold\_input.json} per protein
+    \item \textbf{Sequences} -- UniProt $\to$ per-protein FASTA
+    \item \textbf{Fold input} -- \texttt{fold\_input.json} per protein
       $\times$ apo/holo (AF3-dialect JSON, ABCfold's native input:
       sequence + every replica seed)
-    \item \textbf{MMseqs2 default run} --- MSA + top-hit templates from the
+    \item \textbf{MMseqs2 default run} -- MSA + top-hit templates from the
       ColabFold webserver, no manual curation, no pocket restraint;
       embedded into \texttt{fold\_input.resolved.json}
   \end{enumerate}
   \vspace{0.5em}
   \small Runs locally, driven by Snakemake
-  (\texttt{worflows/preprocessing/Snakefile}); resumable --- existing
+  (\texttt{worflows/preprocessing/Snakefile}); resumable -- existing
   resolved inputs are never re-fetched.
 \end{frame}
 
@@ -314,7 +379,7 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
     \item Launches all 6 backends against the same
       \texttt{fold\_input.resolved.json}
     \item AlphaFold3 backend runs via IFB's \texttt{alphafold} module
-      (Singularity wrapper, auto-discovered) --- no separate image needed
+      (Singularity wrapper, auto-discovered) -- no separate image needed
     \item Boltz/Chai-1/OpenFold3/Protenix/RosettaFold3 built once via
       \texttt{--prime} on a login node (needs internet)
   \end{itemize}
@@ -323,7 +388,7 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
 \begin{frame}{Gibberellin importers run first}
   \begin{itemize}
     \item 8 GA1-ligand proteins (\texttt{NPF2.1, NPF2.5, NPF2.10, NPF2.12,
-      NPF2.13, NPF3.1, NPF4.1, NPF5.6}) --- the group already studied with
+      NPF2.13, NPF3.1, NPF4.1, NPF5.6}) -- the group already studied with
       AF3 + Boltz-2
     \item Listed in \texttt{priority\_gibberellin.txt}, put first in the
       SLURM array manifest
@@ -338,13 +403,13 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
 
 \begin{frame}{Stage 5--6: topology and alignment}
   \begin{enumerate}
-    \item \textbf{DeepTMHMM} --- TM-helix topology (BioLib), once
-    \item \textbf{TM-helix Kabsch alignment} --- per protein $\times$ form,
+    \item \textbf{DeepTMHMM} -- TM-helix topology (BioLib), once
+    \item \textbf{TM-helix Kabsch alignment} -- per protein $\times$ form,
       pooled across every backend and seed
   \end{enumerate}
   \vspace{0.5em}
   Output: \texttt{results/tm\_alignment/<protein>/\{aligned\_ca\_tm.npy,
-  meta.csv\}} --- \texttt{meta.csv} now carries a \textbf{\texttt{model}}
+  meta.csv\}} -- \texttt{meta.csv} now carries a \textbf{\texttt{model}}
   column (\texttt{alphafold3}/\texttt{boltz}/\texttt{chai1}/
   \texttt{openfold3}/\texttt{protenix}/\texttt{rosettafold3}).
 \end{frame}
