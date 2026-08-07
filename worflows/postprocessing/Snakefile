@@ -10,10 +10,32 @@ Pipeline order
   6. compress_abcfold_metadata — trim + standardize each run's raw ABCfold
                                   output (HDF5 arrays + Parquet metadata),
                                   deleting the now-redundant raw confidence
-                                  sprawl as soon as it's verified — runs
-                                  BEFORE stage 7 specifically so disk usage
-                                  drops per-protein as early as possible,
-                                  not only once the whole pipeline finishes
+                                  sprawl as soon as it's verified. Runs
+                                  BEFORE stage 7 so disk usage drops per-
+                                  protein as early as possible.
+
+                                  worflows/processing/submit_abcfold.sh's
+                                  SLURM array now does this same conversion
+                                  on the compute node, right after each
+                                  run's `abcfold` call, BEFORE rsync — that's
+                                  the primary path (fewer/smaller files to
+                                  transfer, avoids IFB's file-count quota).
+                                  This rule is what makes that safe to rely
+                                  on without babysitting it: it's a plain
+                                  Snakemake rule with model_metadata.parquet
+                                  + arrays.h5 as outputs, so normal DAG
+                                  evaluation already gives the "skip if
+                                  already done, run if not" behavior for
+                                  free — no detection logic needed. A run
+                                  rsynced back pre-compressed (from the
+                                  cluster) already has those outputs and
+                                  this rule is a no-op for it; a run whose
+                                  cluster-side compression failed/timed out,
+                                  or that was rsynced back from before that
+                                  cluster-side step existed, still has its
+                                  raw confidence sprawl on disk and gets
+                                  compressed right here instead — same
+                                  script, same result, just running locally.
   7. tm_helix_alignment        — Kabsch superposition of every model CIF
                                   ABCfold produced (pooled across all 6
                                   backends x seed) onto the 12 TM-helix Cα
@@ -89,6 +111,20 @@ print(
     f"{len(DONE_PROTEINS)} apo/holo run(s) with a completed ABCfold run."
 )
 
+# Purely informational — detection itself is just the compress_abcfold_metadata
+# rule's own output-existence check (see its comment below); this only tells
+# you up front how many runs it'll actually have to do local work for.
+_ALREADY_COMPRESSED = [
+    r for r in DONE_PROTEINS
+    if (METADATA_DIR / r / "model_metadata.parquet").exists()
+    and (METADATA_DIR / r / "arrays.h5").exists()
+]
+print(
+    f"[postprocess] {len(_ALREADY_COMPRESSED)}/{len(DONE_PROTEINS)} run(s) already "
+    f"compressed (cluster-side, or a prior local run) | "
+    f"{len(DONE_PROTEINS) - len(_ALREADY_COMPRESSED)} need local compress_abcfold_metadata."
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGE 5: TM topology via DeepTMHMM
@@ -131,6 +167,18 @@ rule run_deeptmhmm_topology:
 # own verify-then-delete gate, documented in that script's module
 # docstring); it never touches CIFs or the small per-sample summary-
 # confidence files stage 7 depends on.
+#
+# BACKWARD-COMPATIBILITY / FALLBACK NOTE: worflows/processing/submit_abcfold.sh
+# now runs this exact same conversion on the compute node before rsync (the
+# primary path). This rule's job/output/wildcards shape is unchanged by
+# that — `output.parquet`/`output.h5` already existing (rsynced in already-
+# compressed) is exactly the condition Snakemake's normal DAG evaluation
+# uses to consider a rule's target up to date, so a pre-compressed run is
+# skipped automatically. Nothing further to add for that: this rule runs
+# (and only runs) for a protein that still needs it, whether that's because
+# cluster-side compression there failed/timed out, or because
+# results/abcfold/<protein>/ was rsynced back from before that cluster-side
+# step existed at all.
 # ─────────────────────────────────────────────────────────────────────────────
 
 

@@ -40,12 +40,33 @@
 #   predictor's env + weights + a --help smoke test, no GPU, no inference):
 #     bash submit_abcfold.sh --prime
 #
+#   Each array task also trims + standardizes its own results/abcfold/<run>/
+#   in place (raw per-sample confidence JSON/npz/npy -> results/metadata/<run>/
+#   {arrays.h5,model_metadata.parquet}, --delete-originals) right after that
+#   run's `abcfold` call finishes — see scripts/compress_abcfold_metadata.py's
+#   module docstring. Doing this on the compute node, before rsync, instead of
+#   only in worflows/postprocessing/Snakefile afterward, is the whole point:
+#   ~20x fewer bytes and ~35x fewer files to rsync back, and it keeps IFB's
+#   per-user file-count quota from being the thing that fails a large batch.
+#   Needs its own env, created once (also needs internet — login node):
+#     micromamba env create -f envs/metadata_compress.yaml
+#   A run whose compression fails/times out on the cluster is NOT stuck: its
+#   raw files are simply left in place (compress_abcfold_metadata.py only
+#   deletes originals after verifying its own output, and only once every
+#   sample for that run has been converted — see its module docstring), and
+#   worflows/postprocessing/Snakefile's compress_abcfold_metadata rule
+#   compresses it locally instead, the first time that Snakefile runs after
+#   the rsync — same script, same result, just later. That rule also covers
+#   any results/abcfold/<run>/ rsynced back from before this cluster-side
+#   step existed.
+#
 # Prerequisites:
 #   - worflows/preprocessing/Snakefile completed (fold_input.resolved.json exists per run)
 #   - Run from the pipeline root directory
 #   - micromamba available on $PATH (ABCfold requires it to build backend envs)
 #   - `module load singularity` works (loaded automatically below)
 #   - `bash submit_abcfold.sh --prime` has completed successfully at least once
+#   - `micromamba env create -f envs/metadata_compress.yaml` has completed at least once
 #
 # Flags below (--number_of_models, --num_recycles, --model_params,
 # --af3_sif_path, --override, --no_server, --no_visuals) are confirmed
@@ -215,6 +236,8 @@ EXCLUDE_NODES="gpu-node-7,gpu-node-9"
 
 FOLD_IN_DIR="data/fold_inputs"
 ABCFOLD_OUT_DIR="results/abcfold"
+METADATA_OUT_DIR="results/metadata"           # config.yaml dirs.metadata — scripts/compress_abcfold_metadata.py output
+METADATA_ENV="metadata-compress"              # envs/metadata_compress.yaml env name
 PRIORITY_MANIFEST="$FOLD_IN_DIR/priority_gibberellin.txt"
 
 # ── Parse arguments ───────────────────────────────────────────────────────────
@@ -303,6 +326,15 @@ if [[ -z "$AF3_SIF_PATH" ]] && [[ "$MODEL_FLAG" == *a* ]]; then
     echo "         abcfold.af3_sif_path) manually, or check that"
     echo "         /shared/software/singularity/wrappers/alphafold/$AF3_MODULE_VERSION/run_alphafold.py"
     echo "         still exists and still references a .sif file."
+fi
+if ! micromamba env list 2>/dev/null | grep -qE "(^|/)${METADATA_ENV}\$"; then
+    echo "WARNING: micromamba env '$METADATA_ENV' not found — each array task's"
+    echo "         post-prediction compression step (scripts/compress_abcfold_metadata.py)"
+    echo "         will fail and fall back to leaving results/abcfold/<run>/ raw"
+    echo "         (harmless — worflows/postprocessing/Snakefile compresses it locally"
+    echo "         later instead — but you lose the rsync/quota benefit on the cluster"
+    echo "         side). Fix once, on a login node:"
+    echo "           micromamba env create -f envs/metadata_compress.yaml"
 fi
 
 # ── Collect pending runs, Gibberellin (GA1) importers first ──────────────────
@@ -472,6 +504,9 @@ CUDA_HOME_PATH="$CUDA_HOME_PATH"
 CUDA_MODULE_VERSION="$CUDA_MODULE_VERSION"
 NUMBER_OF_MODELS=$NUMBER_OF_MODELS
 NUM_RECYCLES=$NUM_RECYCLES
+ABCFOLD_OUT_DIR="$ABCFOLD_OUT_DIR"
+METADATA_OUT_DIR="$METADATA_OUT_DIR"
+METADATA_ENV="$METADATA_ENV"
 
 module load singularity   # ABCfold shells out to \`singularity exec\` directly for AF3
                           # (not \`module load alphafold\` — we only borrow its .sif, see
@@ -514,6 +549,26 @@ while IFS='|' read -r json out_dir done_file; do
 
     echo "\$(date): prediction finished" > "\$done_file"
     echo "[\$(date)] DONE: \$protein"
+
+    # Trim + standardize this run's own results/abcfold/\$protein/ in place
+    # (raw per-sample confidence sprawl -> results/metadata/\$protein/
+    # {arrays.h5,model_metadata.parquet}, --delete-originals) before rsync —
+    # see scripts/compress_abcfold_metadata.py's module docstring. Failure
+    # here is non-fatal on purpose (prediction.done is already written
+    # above): raw files are simply left as-is and
+    # worflows/postprocessing/Snakefile's compress_abcfold_metadata rule
+    # compresses this run locally instead, next time that Snakefile runs.
+    echo "[\$(date)] COMPRESS: \$protein"
+    if micromamba run -n "\$METADATA_ENV" python3 scripts/compress_abcfold_metadata.py \\
+            --protein "\$protein" \\
+            --abcfold-output-root "\$ABCFOLD_OUT_DIR" \\
+            --out-root "\$METADATA_OUT_DIR" \\
+            --delete-originals \\
+            --skip-merge; then
+        echo "[\$(date)] COMPRESS OK: \$protein"
+    else
+        echo "[\$(date)] WARNING: compression failed for \$protein — raw results/abcfold/\$protein/ left as-is, will be compressed locally by worflows/postprocessing/Snakefile instead"
+    fi
     echo ""
 
 done < <(sed -n "\${LINE_START},\${LINE_END}p" "\$MANIFEST")
