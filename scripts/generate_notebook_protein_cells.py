@@ -20,6 +20,11 @@ duplicated a third time here (notebook cell 3 already mirrors
 worflows/preprocessing/Snakefile's ligand_for(), which says to "keep the
 two in sync" -- adding a generator-script copy would be a third place to
 drift).
+
+Each generated code cell's third line calls plot_pca with an AF3-excluded
+`models=` override, so every new protein comes with a ready-made ablation
+comparison (does OpenFold3 + the rest already cover AF3's conformations?)
+without having to hand-add it later.
 """
 import argparse
 import json
@@ -80,11 +85,11 @@ def _covered_proteins(nb):
 def _backends_present(protein):
     present = set()
     for status in ("apo", "holo"):
-        csv_path = ALIGN_ROOT / f"{protein}__{status}" / "meta.csv"
-        if not csv_path.exists():
+        meta_path = ALIGN_ROOT / f"{protein}__{status}" / "meta.parquet"
+        if not meta_path.exists():
             continue
         import pandas as pd
-        present |= set(pd.read_csv(csv_path)["model"].dropna().unique())
+        present |= set(pd.read_parquet(meta_path)["model"].dropna().unique())
     return present
 
 
@@ -150,7 +155,8 @@ def _build_cell_pair(protein, npf_name, ns):
         "outputs": [],
         "source": [
             f'plot_pca("{protein}")  # no clustering, colored by model (default) -- which of the 6 backends produced each point\n',
-            f'plot_pca("{protein}", cluster_method="gmm", n_components="auto")',
+            f'plot_pca("{protein}", cluster_method="gmm", n_components="auto")\n',
+            f'plot_pca("{protein}", models={{**ENABLED_MODELS, "alphafold3": False}})  # ablation: AF3 excluded -- does the remaining ensemble still cover its conformations?',
         ],
     }
     return md_cell, code_cell

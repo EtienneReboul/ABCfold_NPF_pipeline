@@ -1,18 +1,28 @@
 """
-Snakefile_postprocess — Stages 5-6
+Snakefile_postprocess — Stages 5-7
 ====================================
 Run locally (Mac / workstation) after worflows/processing/submit_abcfold.sh
 has completed on the cluster and results/abcfold/ has been rsynced back.
 
 Pipeline order
 --------------
-  5. deeptmhmm_topology — TM-helix topology via DeepTMHMM (BioLib cloud)
-  6. tm_helix_alignment — Kabsch superposition of every model CIF ABCfold
-                           produced (pooled across all 6 backends x seed)
-                           onto the 12 TM-helix Cα atoms, per protein x form
-
-Both stages are independent of each other's inputs beyond the topology
-sentinel, so they parallelize freely across proteins.
+  5. deeptmhmm_topology        — TM-helix topology via DeepTMHMM (BioLib cloud)
+  6. compress_abcfold_metadata — trim + standardize each run's raw ABCfold
+                                  output (HDF5 arrays + Parquet metadata),
+                                  deleting the now-redundant raw confidence
+                                  sprawl as soon as it's verified — runs
+                                  BEFORE stage 7 specifically so disk usage
+                                  drops per-protein as early as possible,
+                                  not only once the whole pipeline finishes
+  7. tm_helix_alignment        — Kabsch superposition of every model CIF
+                                  ABCfold produced (pooled across all 6
+                                  backends x seed) onto the 12 TM-helix Cα
+                                  atoms, per protein x form. Depends on
+                                  stage 6 having run for that protein
+                                  (ordering only — it never reads anything
+                                  stage 6 deletes, only CIFs + the small
+                                  per-sample summary-confidence files, both
+                                  left untouched by compress_abcfold_metadata)
 
 Prerequisites:
   - worflows/preprocessing/Snakefile completed (data/sequences/sequences.done exists)
@@ -39,6 +49,8 @@ LOG_DIR     = Path(DIRS["logs"])
 
 DEEPTMHMM_CFG = config["deeptmhmm"]
 TM_ALIGN_CFG  = config["tm_alignment"]
+METADATA_CFG  = config["metadata_compress"]
+METADATA_DIR  = Path(DIRS["metadata"])
 
 SEQ_SENTINEL = FASTA_DIR / "sequences.done"
 TOPOLOGY_JSON = INTERPRO_DIR / "tm_topology_summary.json"
@@ -110,7 +122,47 @@ rule run_deeptmhmm_topology:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STAGE 6: TM-helix Kabsch alignment (per protein x form, all backends pooled)
+# STAGE 6: trim + standardize raw ABCfold outputs (HDF5 arrays + Parquet
+# metadata), deleting the now-redundant raw confidence sprawl as soon as
+# it's verified. Runs BEFORE stage 7 (tm_helix_alignment) on purpose — see
+# module docstring — so disk usage drops per-protein as early as possible.
+# --delete-originals only removes what scripts/compress_abcfold_metadata.py
+# itself just converted + spot-checked against source for THIS protein (its
+# own verify-then-delete gate, documented in that script's module
+# docstring); it never touches CIFs or the small per-sample summary-
+# confidence files stage 7 depends on.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+rule compress_abcfold_metadata:
+    input:
+        abcfold_done=str(ABCFOLD_OUT_DIR / "{protein}" / "prediction.done"),
+    output:
+        parquet=str(METADATA_DIR / "{protein}" / "model_metadata.parquet"),
+        h5=str(METADATA_DIR / "{protein}" / "arrays.h5"),
+    log:
+        str(LOG_DIR / "compress_abcfold_metadata" / "{protein}.log"),
+    conda:
+        "../../envs/metadata_compress.yaml"
+    params:
+        abcfold_output_root=str(ABCFOLD_OUT_DIR),
+        out_root=str(METADATA_DIR),
+        sample_checks=METADATA_CFG["sample_checks"],
+    shell:
+        """
+        python scripts/compress_abcfold_metadata.py \\
+            --protein              {wildcards.protein} \\
+            --abcfold-output-root  {params.abcfold_output_root} \\
+            --out-root             {params.out_root} \\
+            --sample-checks        {params.sample_checks} \\
+            --delete-originals \\
+            --skip-merge \\
+        > {log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 7: TM-helix Kabsch alignment (per protein x form, all backends pooled)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -119,11 +171,15 @@ rule tm_helix_alignment:
         topology=str(TOPOLOGY_JSON),
         topo_done=str(TOPO_SENTINEL),
         abcfold_done=str(ABCFOLD_OUT_DIR / "{protein}" / "prediction.done"),
+        # Ordering dependency only (stage 6 runs first so disk usage drops
+        # as early as possible) — this rule never reads model_metadata.parquet
+        # or arrays.h5, and stage 6 never deletes anything this rule needs.
+        metadata_done=str(METADATA_DIR / "{protein}" / "model_metadata.parquet"),
     output:
         aligned_ca=str(ALIGN_DIR / "{protein}" / "aligned_ca.npy"),
         aligned_ca_tm=str(ALIGN_DIR / "{protein}" / "aligned_ca_tm.npy"),
-        meta=str(ALIGN_DIR / "{protein}" / "meta.csv"),
-        resids=str(ALIGN_DIR / "{protein}" / "resids.csv"),
+        meta=str(ALIGN_DIR / "{protein}" / "meta.parquet"),
+        resids=str(ALIGN_DIR / "{protein}" / "resids.parquet"),
     log:
         str(LOG_DIR / "tm_alignment" / "{protein}.log"),
     conda:
@@ -144,13 +200,42 @@ rule tm_helix_alignment:
         """
 
 
+rule merge_metadata:
+    # Separate from compress_abcfold_metadata so N parallel per-protein jobs
+    # never race on writing the same all_models.parquet — this runs once,
+    # after every per-protein model_metadata.parquet already exists.
+    input:
+        [str(METADATA_DIR / protein / "model_metadata.parquet") for protein in DONE_PROTEINS],
+    output:
+        str(METADATA_DIR / "all_models.parquet"),
+    log:
+        str(LOG_DIR / "merge_metadata.log"),
+    conda:
+        "../../envs/metadata_compress.yaml"
+    params:
+        out_root=str(METADATA_DIR),
+    shell:
+        """
+        python -c "
+import sys; sys.path.insert(0, 'scripts')
+from pathlib import Path
+from compress_abcfold_metadata import merge_all
+merge_all(Path('{params.out_root}'))
+" \\
+        > {log} 2>&1
+        """
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RULE ALL — postprocess targets
 # ─────────────────────────────────────────────────────────────────────────────
 
-TARGETS = [str(TOPO_SENTINEL)] + [
-    str(ALIGN_DIR / protein / "aligned_ca.npy") for protein in DONE_PROTEINS
-]
+TARGETS = (
+    [str(TOPO_SENTINEL)]
+    + [str(ALIGN_DIR / protein / "aligned_ca.npy") for protein in DONE_PROTEINS]
+    + [str(METADATA_DIR / protein / "model_metadata.parquet") for protein in DONE_PROTEINS]
+    + ([str(METADATA_DIR / "all_models.parquet")] if DONE_PROTEINS else [])
+)
 
 rule all:
     default_target: True

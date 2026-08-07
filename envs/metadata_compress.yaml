@@ -1,0 +1,13 @@
+name: metadata-compress
+# Env for scripts/compress_abcfold_metadata.py (postprocessing stage 7):
+# converts ABCfold's raw per-sample confidence JSON/npz/npy sprawl into
+# one HDF5 array store + one Parquet metadata table per protein x form.
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - h5py>=3.10
+  - pyarrow>=15.0
+  - pandas>=2.0
+  - numpy>=1.26

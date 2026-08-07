@@ -16,7 +16,11 @@
 #                          the IFB cluster (SLURM), reusing the embedded MSA/
 #                          templates — no network needed on compute nodes.
 #   5. DeepTMHMM        — TM-helix topology (BioLib cloud)
-#   6. TM alignment     — Kabsch superposition on the 12 TM-helix Cα atoms,
+#   6. Trim + standardize — compress each run's raw ABCfold output to HDF5 +
+#                          Parquet, deleting the now-redundant raw confidence
+#                          sprawl as soon as it's verified (runs before stage 7
+#                          so disk usage drops as early as possible)
+#   7. TM alignment     — Kabsch superposition on the 12 TM-helix Cα atoms,
 #                          pooled across every backend x seed
 
 # ── Stage 1: UniProt sequence download ───────────────────────────────────────
@@ -146,7 +150,14 @@ ligands:
 deeptmhmm:
   expected_tm: 12                   # required TM helix count per protein
 
-# ── Stage 6: TM-helix Kabsch alignment ───────────────────────────────────────
+# ── Stage 6: raw-output trim + standardize (HDF5 + Parquet) ─────────────────
+# Runs before stage 7 (tm_helix_alignment) — see worflows/postprocessing/
+# Snakefile's module docstring — so disk usage drops per-protein as early as
+# possible instead of only once the whole postprocessing pipeline finishes.
+metadata_compress:
+  sample_checks: 5                  # arrays.h5 entries spot-checked against source per run
+
+# ── Stage 7: TM-helix Kabsch alignment ───────────────────────────────────────
 tm_alignment:
   n_iter: 5                         # Procrustes iterations to converge the mean TM structure
 
@@ -157,4 +168,5 @@ dirs:
   interpro:    "data/interpro"         # DeepTMHMM GFF3 + topology summary
   abcfold_out: "results/abcfold"       # ABCfold outputs (all 6 backends, cache + predictions)
   tm_alignment: "results/tm_alignment" # aligned Cα ensembles + metadata, tagged by backend
+  metadata:    "results/metadata"      # compressed HDF5 arrays + Parquet metadata, per run + merged
   logs:        "logs"
