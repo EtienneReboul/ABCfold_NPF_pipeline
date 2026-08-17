@@ -232,15 +232,23 @@ form, pooled across every backend and seed), writing
 
 ### 6. Explore & cluster (notebook)
 
-Not yet ported from `AF3_NPF_pipeline`. That repo's
+`notebook/tm_conformation_clustering_{gibberellin,nitrate,other_ligand,apoform}.ipynb`
+— one notebook per ligand category, same split as `AF3_NPF_pipeline`'s
 `notebook/tm_conformation_clustering_{gibberellin,gibberellin_boltz,nitrate,other_ligand,apoform}.ipynb`
-read the exact same `results/tm_alignment/<protein>/{aligned_ca_tm.npy,meta.csv}`
-schema this pipeline now produces, plus one new column: color/facet by
-`meta["model"]` to compare which backend(s) actually reach which cluster —
-that's the whole reason this pipeline exists. `envs/notebook.yaml` here is
-unchanged from that repo, so copying a notebook over and adding a
-`color_by="model"` option to its plotting functions should be enough to
-get started.
+(minus the Boltz-2 overlay fork, not needed here since this pipeline
+already runs 6 backends together). Each reads
+`results/tm_alignment/<protein>/{aligned_ca_tm.npy,meta.csv}` and adds one
+column beyond what `AF3_NPF_pipeline` had: color/facet by `meta["model"]`
+to compare which backend(s) actually reach which cluster — that's the
+whole reason this pipeline exists. A single combined notebook (all
+proteins in one file) was tried first and dropped — the interactive
+Plotly output for every protein in one notebook overloaded the renderer —
+so results land split by category instead, matching `AF3_NPF_pipeline`'s
+approach. `scripts/generate_notebook_protein_cells.py <category>` appends
+a markdown+code cell pair for every new protein under
+`results/tm_alignment/` in that category (safe to re-run repeatedly, only
+appends what's missing); `scripts/generate_notebook_protein_cells.py all`
+refreshes every category notebook in one go.
 
 ---
 
