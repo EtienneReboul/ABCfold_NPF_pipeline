@@ -18,6 +18,8 @@
 \definecolor{lobeN}{HTML}{268BD2}    % MFS icon: N-domain lobe
 \definecolor{lobeC}{HTML}{CB4B16}    % MFS icon: C-domain lobe
 \definecolor{substrate}{HTML}{D33682} % MFS icon: bound-substrate dot
+\definecolor{gibberellin}{HTML}{D55E00}   % matches plot_npf_phylo_tree.py default
+\definecolor{glucosinolate}{HTML}{009E73} % matches plot_npf_phylo_tree.py default
 
 % MFS conformation icon: two elongated lobes (N, C) hinged at a shared
 % pivot (0,0) -- the domain interface/gate. Each lobe rotates AROUND that
@@ -193,6 +195,61 @@ Institut de Biologie Moléculaire des Plantes (IBMP), Strasbourg}
       unless otherwise indicated. NA, nicotianamine.\\
       Morales de los Ríos \textit{et al.}, \textit{New Phytologist}, CC
       BY 4.0. DOI:10.1111/nph.70730}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{NPF family: clade partitioning}
+  \begin{columns}[T]
+    \begin{column}{0.42\textwidth}
+      \footnotesize
+      \begin{itemize}
+        \setlength{\itemsep}{0.3em}\setlength{\topsep}{0.1em}
+        \item \textbf{53 NPF sequences} in \textit{Arabidopsis thaliana},
+          aligned with MUSCLE
+        \item Tree splits the family into \textbf{8 clades}
+          (NPF1--NPF8 subfamily numbering)
+        \item Highlighted in red: the best-characterized importers --
+          NPF6.3/NRT1.1, NPF6.2/NRT1.4, NPF7.3/NRT1.5
+        \item[$\Rightarrow$] Clade position gives a natural axis for
+          comparing predicted conformations
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.55\textwidth}
+      \centering
+      \colorbox{white}{\includegraphics[width=0.66\textwidth]{NPFs_phylogenetic_tree.jpg}}\\[0.1em]
+      {\tiny Phylogenetic tree of the NPF family (\textit{A.\ thaliana}), 53
+      sequences aligned with MUSCLE; NPF6.3/NRT1.1, NPF6.2/NRT1.4 and
+      NPF7.3/NRT1.5 marked in red.
+      Morales de los R\'{i}os \textit{et al.}, \textit{Plant Physiology and
+      Biochemistry} 168 (2021), CC BY-NC-ND 4.0.}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Clade membership $\neq$ shared substrate}
+  \begin{columns}[T]
+    \begin{column}{0.42\textwidth}
+      \footnotesize
+      \begin{itemize}
+        \setlength{\itemsep}{0.3em}\setlength{\topsep}{0.1em}
+        \item Our own tree, same 53 sequences, MUSCLE end to end
+          (alignment + UPGMA, script: \texttt{plot\_npf\_phylo\_tree.py})
+        \item \textcolor{gibberellin}{\textbf{Gibberellin importers}} (8
+          proteins, GA1 substrate): scattered across NPF2/3/4 --
+          \textbf{weak} clade colocalisation
+        \item \textcolor{glucosinolate}{\textbf{Glucosinolate
+          importers}}/GTR1--3: adjacent leaves, one NPF2 sub-clade --
+          \textbf{strong} clade colocalisation
+        \item[$\Rightarrow$] Shared substrate doesn't imply shared clade --
+          homology alone can't stand in for per-protein prediction
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.55\textwidth}
+      \centering
+      \includegraphics[width=0.76\textwidth]{npf_clade_tree_transparent_slide.png}\\[0.2em]
+      {\tiny Branch color = auto-detected clade (legend in
+      \texttt{npf\_clade\_tree\_transparent.png})}
     \end{column}
   \end{columns}
 \end{frame}

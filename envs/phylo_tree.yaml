@@ -1,0 +1,30 @@
+name: npf-phylo-tree
+# Builds a tree from data/sequences/npf_arabidopsis.fasta with MUSCLE end to
+# end (alignment + -maketree), the same tool the published Fig. 4's caption
+# names, and renders it with radialtree (github.com/koonimaru/radialtree) as
+# a customisable circular dendrogram. Used by:
+#   - scripts/plot_npf_phylo_tree.py
+#
+# muscle is pinned to v3, NOT the newer v5: v3 is what a 2021 paper would
+# have used, and only v3 has -maketree (v5 dropped tree-building, alignment
+# only) -- see the script's module docstring for why that matters here.
+#
+# radialtree has no PyPI release (git install only) and hasn't been updated
+# since 2022 -- it calls matplotlib.cm.get_cmap, removed in matplotlib>=3.9.
+# The script shims that one call back in at import time rather than pinning
+# matplotlib down; see the module docstring for the tradeoff.
+channels:
+  - bioconda
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - biopython>=1.83      # Bio.Phylo tree parsing/rendering, Bio.SeqIO
+  - muscle=3.8.1551       # alignment + -maketree (Kimura NJ/UPGMA), bioconda
+  - matplotlib>=3.8       # radialtree's rendering backend
+  - scipy>=1.11            # scipy.cluster.hierarchy.dendrogram, radialtree's input format
+  - numpy>=1.26
+  - pyyaml>=6.0           # --groups config files
+  - pip
+  - pip:
+      - git+https://github.com/koonimaru/radialtree.git
