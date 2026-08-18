@@ -45,6 +45,20 @@ Pipeline order
                                   stage 6 deletes, only CIFs + the small
                                   per-sample summary-confidence files, both
                                   left untouched by compress_abcfold_metadata)
+  8. cluster_conformations     — headless, non-interactive port of
+                                  scripts/_notebook_setup_functions.py's
+                                  plot_pca()/plot_ligand_pca(): GMM macro-
+                                  state clustering (k=3, tag "pca_k3") of
+                                  the pooled apo+holo TM-Cα ensemble, then
+                                  — for holoform (ligand-assigned) proteins
+                                  — GMM-auto ligand-pose sub-clustering per
+                                  macro-state cluster. See
+                                  scripts/cluster_conformations.py's module
+                                  docstring for the exact scheme (matches
+                                  what's already on disk under
+                                  results/tm_reannotated/ and
+                                  results/ligand_pose/ from earlier manual
+                                  notebook runs).
 
 Prerequisites:
   - worflows/preprocessing/Snakefile completed (data/sequences/sequences.done exists)
@@ -67,6 +81,7 @@ FASTA_DIR   = Path(DIRS["fasta"])
 INTERPRO_DIR = Path(DIRS["interpro"])
 ABCFOLD_OUT_DIR = Path(DIRS["abcfold_out"])
 ALIGN_DIR   = Path(DIRS["tm_alignment"])
+REANN_DIR   = Path(DIRS["tm_reannotated"])
 LOG_DIR     = Path(DIRS["logs"])
 
 DEEPTMHMM_CFG = config["deeptmhmm"]
@@ -124,6 +139,19 @@ print(
     f"compressed (cluster-side, or a prior local run) | "
     f"{len(DONE_PROTEINS) - len(_ALREADY_COMPRESSED)} need local compress_abcfold_metadata."
 )
+
+# Base protein names (no __apo/__holo suffix) whose apoform ABCfold run has
+# completed -- stage 8's macro-state clustering requires apoform (see
+# scripts/cluster_conformations.py's _load_protein: apoform is the Kabsch
+# anchor every holoform frame gets refit onto, so it's a hard requirement
+# even for proteins with no ligand assigned at all). Whether a given base
+# protein ALSO has a completed holoform run (i.e. worflows/preprocessing/
+# Snakefile's ligand_for() assigned it a ligand) is decided per-wildcards by
+# cluster_conformations_input below, straight off this same DONE_PROTEINS
+# list -- no need to re-import ligand_for() here just to answer that.
+CLUSTER_BASE_PROTEINS = sorted({
+    r.rsplit("__", 1)[0] for r in DONE_PROTEINS if r.endswith("__apo")
+})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -275,6 +303,54 @@ merge_all(Path('{params.out_root}'))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STAGE 8: conformational clustering (macro-state, then per-macro-state
+# ligand pose) — headless, non-interactive port of
+# scripts/_notebook_setup_functions.py's plot_pca()/plot_ligand_pca() (the
+# functions driving the manually-run tm_conformation_clustering_*.ipynb
+# notebooks). See scripts/cluster_conformations.py's module docstring for
+# the exact fixed clustering scheme (GMM k=3 macro-state, tag "pca_k3", then
+# GMM auto ligand-pose sub-clustering per macro-state cluster) — chosen to
+# exactly match what's already on disk under results/tm_reannotated/ and
+# results/ligand_pose/ from the earlier manual notebook runs, so this rule
+# can safely re-derive (not just extend) those directories for any protein.
+#
+# wildcards.protein here is the BASE protein name (no __apo/__holo suffix),
+# unlike stages 6/7 above — cluster_conformations.py pools both runs itself
+# (via _load_protein), so it needs both directories, not one run at a time.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def cluster_conformations_input(wildcards):
+    inputs = {
+        "apo_ca": str(ALIGN_DIR / f"{wildcards.protein}__apo" / "aligned_ca_tm.npy"),
+        "apo_resids": str(ALIGN_DIR / f"{wildcards.protein}__apo" / "resids.parquet"),
+    }
+    if f"{wildcards.protein}__holo" in DONE_PROTEINS:
+        inputs["holo_ca"] = str(ALIGN_DIR / f"{wildcards.protein}__holo" / "aligned_ca_tm.npy")
+    return inputs
+
+
+rule cluster_conformations:
+    input:
+        unpack(cluster_conformations_input),
+    output:
+        sentinel=str(REANN_DIR / "{protein}" / "pca_k3" / "cluster.done"),
+    log:
+        str(LOG_DIR / "cluster_conformations" / "{protein}.log"),
+    conda:
+        "../../envs/clustering.yaml"
+    params:
+        max_per_cluster=20,
+    shell:
+        """
+        python scripts/cluster_conformations.py \\
+            --protein          {wildcards.protein} \\
+            --max-per-cluster  {params.max_per_cluster} \\
+        > {log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # RULE ALL — postprocess targets
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -283,6 +359,7 @@ TARGETS = (
     + [str(ALIGN_DIR / protein / "aligned_ca.npy") for protein in DONE_PROTEINS]
     + [str(METADATA_DIR / protein / "model_metadata.parquet") for protein in DONE_PROTEINS]
     + ([str(METADATA_DIR / "all_models.parquet")] if DONE_PROTEINS else [])
+    + [str(REANN_DIR / protein / "pca_k3" / "cluster.done") for protein in CLUSTER_BASE_PROTEINS]
 )
 
 rule all:

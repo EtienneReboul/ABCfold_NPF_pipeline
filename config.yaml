@@ -169,4 +169,5 @@ dirs:
   abcfold_out: "results/abcfold"       # ABCfold outputs (all 6 backends, cache + predictions)
   tm_alignment: "results/tm_alignment" # aligned Cα ensembles + metadata, tagged by backend
   metadata:    "results/metadata"      # compressed HDF5 arrays + Parquet metadata, per run + merged
+  tm_reannotated: "results/tm_reannotated" # macro-state (Ca-conformation) GMM cluster assignments + symlinked CIFs
   logs:        "logs"
