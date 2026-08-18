@@ -2,7 +2,7 @@
   "ligand_key": "GA1",
   "resname": "ZZ1",
   "smiles": "C[C@]12[C@@H](O)CC[C@@]3(OC1=O)[C@@H]4CC[C@]5(O)C[C@]4(CC5=C)[C@H]([C@H]23)C(=O)O",
-  "reference_complex_id": "NPF2.10_Q944G5__holo_alphafold3_seed328566308_sample4",
+  "reference_complex_id": "NPF2.10_Q944G5__holo_alphafold3_seed1000684470_sample0",
   "n_heavy": 25,
   "n_total": 49,
   "formula": "C19H24O6"

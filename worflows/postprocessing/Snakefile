@@ -389,6 +389,8 @@ rule cluster_conformations:
 
 rule rescoring_manifest:
     # Once, after every holoform protein's cluster_conformations job has run.
+    # --all: every ipTM>=0.5 holoform frame, not just the capped cluster-
+    # representative sample -- see make_manifest.py's module docstring.
     input:
         [str(REANN_DIR / protein / "pca_k3" / "cluster.done") for protein in HOLO_BASE_PROTEINS],
     output:
@@ -399,7 +401,7 @@ rule rescoring_manifest:
         "../../envs/pyrosetta_rescoring.yaml"
     shell:
         """
-        cd {RESCORING_SRC} && python make_manifest.py > ../../{log} 2>&1
+        cd {RESCORING_SRC} && python make_manifest.py --all > ../../{log} 2>&1
         """
 
 

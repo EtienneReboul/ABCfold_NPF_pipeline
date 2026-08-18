@@ -167,7 +167,9 @@ rescoring:
   relax_cycles: 1                   # FastRelax cycles per replica (see rescoring/README.md's raw-pose caveat
                                      # before raising this — more cycles did not reliably help on real complexes)
   seed: 42                          # base seed for run_batch.py (per-complex seeds derived from this + complex_id)
-  workers_per_protein: 4            # run_batch.py --workers, per rescoring_run_complex Snakemake job
+  workers_per_protein: 12           # run_batch.py --workers, per rescoring_run_complex Snakemake job --
+                                     # matched to `snakemake --cores 12` so one protein gets the full budget
+                                     # (proteins are processed one at a time, not several in parallel, at this width)
   n_validate: 12                    # prep_ligand.py: complexes spot-checked per ligand, spread across backends
 
 # ── Output directories ────────────────────────────────────────────────────────

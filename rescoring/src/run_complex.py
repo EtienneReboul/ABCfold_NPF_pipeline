@@ -43,29 +43,37 @@ def run_one(complex_id: str, cif_path: Path, protein: str, ligand: str, ligand_c
     pp.prepare_complex_pdb(cif_path, ligand_chain, template, staged_path)
     log(f"[{complex_id}] staged pose -> {staged_path}")
 
-    replicas = rl.relieve_clashes(
-        staged_path, config.all_params_paths(), ligand_resname,
-        n_replicas=n_replicas, relax_cycles=relax_cycles, seed=seed,
-    )
+    try:
+        replicas = rl.relieve_clashes(
+            staged_path, config.all_params_paths(), ligand_resname,
+            n_replicas=n_replicas, relax_cycles=relax_cycles, seed=seed,
+        )
 
-    frames = []
-    for rep in replicas:
-        log(f"[{complex_id}] replica {rep['replica']}: "
-            f"fa_rep {rep['fa_rep_raw']:.1f} -> {rep['fa_rep_relaxed']:.1f}  "
-            f"total {rep['total_raw']:.1f} -> {rep['total_relaxed']:.1f}")
-        sfxn = pyrosetta.get_score_function()
-        df = dc.decompose_ligand_contacts(rep["pose"], sfxn, ligand_resname)
-        df.insert(0, "replica", rep["replica"])
-        df.insert(0, "ligand_pose_cluster", ligand_pose_cluster)
-        df.insert(0, "ca_cluster", ca_cluster)
-        df.insert(0, "ligand", ligand)
-        df.insert(0, "protein", protein)
-        df.insert(0, "complex_id", complex_id)
-        df["fa_rep_raw"] = rep["fa_rep_raw"]
-        df["fa_rep_relaxed"] = rep["fa_rep_relaxed"]
-        df["total_raw"] = rep["total_raw"]
-        df["total_relaxed"] = rep["total_relaxed"]
-        frames.append(df)
+        frames = []
+        for rep in replicas:
+            log(f"[{complex_id}] replica {rep['replica']}: "
+                f"fa_rep {rep['fa_rep_raw']:.1f} -> {rep['fa_rep_relaxed']:.1f}  "
+                f"total {rep['total_raw']:.1f} -> {rep['total_relaxed']:.1f}")
+            sfxn = pyrosetta.get_score_function()
+            df = dc.decompose_ligand_contacts(rep["pose"], sfxn, ligand_resname)
+            df.insert(0, "replica", rep["replica"])
+            df.insert(0, "ligand_pose_cluster", ligand_pose_cluster)
+            df.insert(0, "ca_cluster", ca_cluster)
+            df.insert(0, "ligand", ligand)
+            df.insert(0, "protein", protein)
+            df.insert(0, "complex_id", complex_id)
+            df["fa_rep_raw"] = rep["fa_rep_raw"]
+            df["fa_rep_relaxed"] = rep["fa_rep_relaxed"]
+            df["total_raw"] = rep["total_raw"]
+            df["total_relaxed"] = rep["total_relaxed"]
+            frames.append(df)
+    finally:
+        # staged_path is pure intermediate scratch (regenerable from cif_path any
+        # time via pose_prep.prepare_complex_pdb) -- deleting it regardless of
+        # success/failure keeps disk usage flat across a batch of thousands of
+        # complexes instead of growing by ~350 KB/complex forever. The per-complex
+        # .log already captures enough detail to debug a failure without the PDB.
+        staged_path.unlink(missing_ok=True)
 
     result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     log(f"[{complex_id}] done in {time.time() - t0:.1f}s, {len(result)} rows")

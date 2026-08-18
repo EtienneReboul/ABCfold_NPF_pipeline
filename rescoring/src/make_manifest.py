@@ -2,30 +2,38 @@
 """
 rescoring/src/make_manifest.py
 =================================
-Build data/manifest.csv: one row per cluster-representative complex to
-rescore, for every protein scripts/cluster_conformations.py (Stage 1) has
-already clustered.
+Build data/manifest.csv: one row per complex to rescore.
 
-Rather than re-sampling frames itself, this reuses the representative CIFs
-Stage 1's `_reannotate()` already symlinked into
-results/ligand_pose/<protein>/pca_k3/ca_cluster_<k>/<tag>/cluster_<pose>/
-(capped at max_per_cluster, seeded — see cluster_conformations.py) — that
-symlinked set IS the "cluster representatives" scope this rescoring stage
-is meant to cover, so this script just enumerates it rather than
-re-deriving a different sample.
-
-For a macro-state (Ca) cluster that never reached ligand-pose sub-
-clustering (too few holo frames — see cluster_conformations.py's
-MIN_HOLO_FRAMES), falls back to that macro-cluster's own holo-only
-symlinked CIFs directly under
-results/tm_reannotated/<protein>/pca_k3/cluster_<k>/ (filenames are
-"holo_..." / "apo_..." prefixed by unique_frame_id's own status prefix —
-see cluster_conformations.py's _reannotate calls) — so no holoform
-protein/cluster is silently skipped just because it was too small for
-pose sub-clustering.
+Two modes:
+- Default (cluster representatives): one row per protein scripts/
+  cluster_conformations.py (Stage 1) has already clustered, reusing the
+  representative CIFs Stage 1's `_reannotate()` already symlinked into
+  results/ligand_pose/<protein>/pca_k3/ca_cluster_<k>/<tag>/cluster_<pose>/
+  (capped at max_per_cluster, seeded — see cluster_conformations.py) — that
+  symlinked set IS the "cluster representatives" scope this rescoring stage
+  is meant to cover, so this script just enumerates it rather than
+  re-deriving a different sample. For a macro-state (Ca) cluster that never
+  reached ligand-pose sub-clustering (too few holo frames — see
+  cluster_conformations.py's MIN_HOLO_FRAMES), falls back to that macro-
+  cluster's own holo-only symlinked CIFs directly under
+  results/tm_reannotated/<protein>/pca_k3/cluster_<k>/ — so no holoform
+  protein/cluster is silently skipped just because it was too small for
+  pose sub-clustering.
+- `--all`: every holoform frame that passes the same ipTM>=0.5 filter
+  `_load_protein` (scripts/cluster_conformations.py /
+  scripts/_notebook_setup_functions.py) already applies before any frame is
+  even eligible for clustering — i.e. the full raw ensemble those cluster
+  representatives were sampled FROM, not just the sample. Resolves each
+  frame's CIF directly from results/tm_alignment/<protein>__holo/meta.parquet
+  (the same backend-discovery logic scripts/cluster_conformations.py uses,
+  duplicated here rather than imported — that module pulls in plotly/kneed,
+  not part of this project's env). complex_id naming matches the default
+  mode exactly ("<protein>__holo_<frame_id>"), so a complex already scored
+  via the cluster-representative manifest is recognized as done, not re-run.
 
 Usage:
     python make_manifest.py
+    python make_manifest.py --all
 """
 from __future__ import annotations
 
@@ -39,6 +47,69 @@ import config
 import pose_prep as pp
 
 LIGAND_POSE_TAG_RE = re.compile(r"^pca_k3_cluster(\d+)_ligandpca")
+
+# Mirrors scripts/cluster_conformations.py's BACKEND_PATTERNS / _backend_of /
+# _strip_model_suffix / _discover_abcfold_cifs / _frame_id_for_cif /
+# _build_cif_by_key -- duplicated here (not imported: that module pulls in
+# plotly/kneed/sklearn, not part of envs/pyrosetta_rescoring.yaml) for --all
+# mode's CIF resolution. Keep in sync if that script's version changes.
+BACKEND_PATTERNS = {
+    "alphafold3":   "alphafold3",
+    "boltz":        "boltz",
+    "chai1":        "chai",
+    "openfold3":    "openfold",
+    "protenix":     "protenix",
+    "rosettafold3": "rosettafold",
+}
+
+
+def _backend_of(path: Path, predictions_dir: Path) -> str:
+    try:
+        top = path.relative_to(predictions_dir).parts[0].lower()
+    except (ValueError, IndexError):
+        return "unknown"
+    for backend, pattern in BACKEND_PATTERNS.items():
+        if pattern in top:
+            return backend
+    return "unknown"
+
+
+def _strip_model_suffix(stem: str) -> str:
+    return re.sub(r"_model(_fixed)?$", "", stem)
+
+
+def _discover_abcfold_cifs(run_name: str) -> list[Path]:
+    predictions_dir = config.ABCFOLD_OUT_ROOT / run_name
+    all_cifs = sorted(
+        c for c in predictions_dir.rglob("*.cif") if "templates" not in c.parts
+    )
+    best_of_run_or_seed = f"{predictions_dir.name}_model"
+    per_sample = [c for c in all_cifs if c.stem != best_of_run_or_seed]
+
+    deduped = {}
+    for c in per_sample:
+        key = (c.parent, _strip_model_suffix(c.stem))
+        if key not in deduped or c.stem.endswith("_fixed"):
+            deduped[key] = c
+    return sorted(deduped.values())
+
+
+def _frame_id_for_cif(cif_path: Path, predictions_dir: Path) -> str:
+    rel = cif_path.relative_to(predictions_dir)
+    model = _backend_of(cif_path, predictions_dir)
+    m = re.search(r"seed-?(\d+)_sample-?(\d+)", str(rel), re.IGNORECASE)
+    if m:
+        return f"{model}_seed{m.group(1)}_sample{m.group(2)}"
+    return f"{model}_{rel.with_suffix('')}".replace("/", "_")
+
+
+def _build_cif_by_key(run_name: str) -> dict[str, Path]:
+    """frame_id -> resolved CIF Path, for one run (e.g. "<protein>__holo")."""
+    predictions_dir = config.ABCFOLD_OUT_ROOT / run_name
+    return {
+        _frame_id_for_cif(c, predictions_dir): c
+        for c in _discover_abcfold_cifs(run_name)
+    }
 
 
 def _holo_run_dir(protein: str) -> Path:
@@ -155,7 +226,66 @@ def build_manifest_for_protein(protein: str) -> list[dict]:
     return rows
 
 
+def build_all_frames_manifest_for_protein(protein: str, iptm_threshold: float = 0.5) -> list[dict]:
+    """Every holoform frame for `protein` that passes ipTM>=iptm_threshold
+    -- the full raw ensemble, not a cluster-representative sample. See
+    module docstring."""
+    if not _holo_run_dir(protein).exists():
+        return []
+    try:
+        ligand_key, _ligand_chain = _protein_ligand(protein)
+    except (FileNotFoundError, ValueError, KeyError) as e:
+        print(f"[make_manifest]   SKIP {protein}: {e}")
+        return []
+
+    meta_path = config.ALIGN_ROOT / f"{protein}__holo" / "meta.parquet"
+    if not meta_path.exists():
+        print(f"[make_manifest]   SKIP {protein}: no {meta_path} -- run "
+              "worflows/postprocessing/Snakefile's tm_helix_alignment stage first")
+        return []
+    meta = pd.read_parquet(meta_path)
+    n_total = len(meta)
+    if iptm_threshold:
+        meta = meta[meta["iptm"] >= iptm_threshold].reset_index(drop=True)
+
+    cif_by_frame = _build_cif_by_key(f"{protein}__holo")
+
+    # ca_cluster is informational only here (not every raw frame necessarily
+    # made it into a symlinked cluster representative) -- looked up from
+    # Stage 1's own assignments.parquet when available, blank otherwise.
+    ca_by_frame: dict[str, int] = {}
+    assign_path = config.REANN_ROOT / protein / config.MACRO_METHOD_TAG / "assignments.parquet"
+    if assign_path.exists():
+        assignments = pd.read_parquet(assign_path)
+        ca_by_frame = dict(zip(assignments["frame_id"], assignments["cluster"]))
+
+    rows = []
+    n_missing_cif = 0
+    for frame_id in meta["frame_id"]:
+        cif_path = cif_by_frame.get(frame_id)
+        if cif_path is None:
+            n_missing_cif += 1
+            continue
+        unique_frame_id = f"holo_{frame_id}"
+        rows.append({
+            "complex_id": f"{protein}__{unique_frame_id}",
+            "protein": protein,
+            "ligand": ligand_key,
+            "ca_cluster": ca_by_frame.get(unique_frame_id, ""),
+            "ligand_pose_cluster": "",
+            "cif_path": str(cif_path.relative_to(config.PIPELINE_ROOT)),
+        })
+
+    if n_missing_cif:
+        print(f"[make_manifest]   {protein}: {n_missing_cif} frame(s) with no resolvable CIF, skipped")
+    print(f"[make_manifest]   {protein} ({ligand_key}): {len(rows)} complex(es) "
+          f"({n_total - len(meta)} dropped by ipTM < {iptm_threshold}, {n_total} raw frames total)")
+    return rows
+
+
 def main():
+    all_frames = "--all" in sys.argv
+
     if not config.LIGPOSE_ROOT.exists() and not config.REANN_ROOT.exists():
         sys.exit(f"Neither {config.LIGPOSE_ROOT} nor {config.REANN_ROOT} exist -- "
                   "run scripts/cluster_conformations.py first.")
@@ -165,7 +295,10 @@ def main():
 
     all_rows: list[dict] = []
     for protein in proteins:
-        all_rows += build_manifest_for_protein(protein)
+        if all_frames:
+            all_rows += build_all_frames_manifest_for_protein(protein)
+        else:
+            all_rows += build_manifest_for_protein(protein)
 
     if not all_rows:
         sys.exit("No complexes found -- has cluster_conformations.py run for any holoform protein?")
@@ -178,7 +311,7 @@ def main():
         raise RuntimeError(f"{dupes} duplicate complex_id values in manifest -- naming collision.")
 
     manifest.to_csv(config.MANIFEST_CSV, index=False)
-    print(f"[make_manifest] wrote {config.MANIFEST_CSV} "
+    print(f"[make_manifest] wrote {config.MANIFEST_CSV} ({'all raw frames' if all_frames else 'cluster representatives'}) "
           f"({len(manifest)} complexes, {manifest.protein.nunique()} proteins, "
           f"{manifest.ligand.nunique()} ligand(s))")
     print(manifest.groupby("ligand")["complex_id"].count())
