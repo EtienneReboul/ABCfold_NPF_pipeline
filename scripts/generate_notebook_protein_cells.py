@@ -395,7 +395,7 @@ def _backends_present(protein):
     return present
 
 
-def _build_cell_pair(protein, npf_name, ns):
+def _build_protein_cells(protein, npf_name, ns):
     ligand_key = ns["ligand_for"](npf_name)
     apo_dir = ALIGN_ROOT / f"{protein}__apo"
     holo_dir = ALIGN_ROOT / f"{protein}__holo"
@@ -439,23 +439,30 @@ def _build_cell_pair(protein, npf_name, ns):
             "cell) once the gap is backfilled.\n"
         )
 
+    # One call per cell (not one cell with several lines): plot_pca/plot_ligand_pca each call
+    # close_all_figures() on entry, so back-to-back calls in a SINGLE cell close the previous
+    # plot's live widget before you ever get to click on it -- only the last call's plot would
+    # ever be interactive. Splitting them into separate cells lets you run one, explore its
+    # FigureWidget (zoom/click-to-reveal) for as long as you like, and only pay the close when
+    # YOU choose to run the next cell.
+    calls = [
+        f'plot_pca("{protein}")  # no clustering, colored by model (default) -- which of the 6 backends produced each point',
+        f'plot_pca("{protein}", cluster_method="gmm", n_components="auto")',
+        f'plot_pca("{protein}", models={{**ENABLED_MODELS, "alphafold3": False}})  # ablation: AF3 excluded -- does the remaining ensemble still cover its conformations?',
+    ]
+    if ligand_key is not None and holo_exists:
+        calls += [
+            f'plot_pca("{protein}", n_components=3)  # manual k=3 -- deterministic fig_tag "pca_k3" for plot_ligand_pca below',
+            f'plot_ligand_pca("{protein}", "pca_k3", n_components="auto", auto_k_max=6)  '
+            '# does each Ca-conformation cluster bind the ligand in one pose, or several?',
+        ]
+
     md_cell = {"cell_type": "markdown", "id": _new_cell_id(), "metadata": {}, "source": md_lines}
-    code_cell = {
-        "cell_type": "code",
-        "execution_count": None,
-        "id": _new_cell_id(),
-        "metadata": {},
-        "outputs": [],
-        "source": [
-            f'plot_pca("{protein}")  # no clustering, colored by model (default) -- which of the 6 backends produced each point\n',
-            f'plot_pca("{protein}", cluster_method="gmm", n_components="auto")\n',
-            f'plot_pca("{protein}", models={{**ENABLED_MODELS, "alphafold3": False}})  # ablation: AF3 excluded -- does the remaining ensemble still cover its conformations?',
-        ],
-    }
-    return md_cell, code_cell
+    code_cells = [_code_cell(call) for call in calls]
+    return md_cell, code_cells
 
 
-def generate(category, dry_run=False, refresh_setup=False):
+def generate(category, dry_run=False, refresh_setup=False, rebuild_cells=False):
     ns = _load_ligand_metadata(category)
     category_proteins = ns["PROTEINS"]
 
@@ -468,11 +475,19 @@ def generate(category, dry_run=False, refresh_setup=False):
     else:
         nb = _new_notebook(category, len(category_proteins))
 
-    covered = _covered_proteins(nb)
+    if rebuild_cells:
+        # Discard every existing per-protein cell (cells 6+) and rebuild them all from the
+        # current template -- e.g. to pick up _build_protein_cells's one-call-per-cell layout
+        # for proteins that were already generated under the old bundled-cell layout. Any
+        # manual one-off edits made directly in those cells are lost (recoverable via git).
+        nb["cells"] = nb["cells"][:6]
+        covered = set()
+    else:
+        covered = _covered_proteins(nb)
     new_proteins = [p for p in category_proteins if p not in covered]
 
     print(f"[{category}] {len(category_proteins)} protein(s) in category, {len(covered)} already covered")
-    if not new_proteins and not refresh_setup:
+    if not new_proteins and not refresh_setup and not rebuild_cells:
         print(f"[{category}] Nothing to do.")
         return
 
@@ -481,11 +496,11 @@ def generate(category, dry_run=False, refresh_setup=False):
             print(f"[{category}]   SKIP {protein}: no __apo run under results/tm_alignment/ (expected for every protein)")
             continue
         npf_name = protein.rsplit("_", 1)[0]
-        md_cell, code_cell = _build_cell_pair(protein, npf_name, ns)
+        md_cell, code_cells = _build_protein_cells(protein, npf_name, ns)
         print(f"[{category}]   + {protein}")
         if not dry_run:
             nb["cells"].append(md_cell)
-            nb["cells"].append(code_cell)
+            nb["cells"].extend(code_cells)
 
     if dry_run:
         print(f"[{category}] (dry run -- notebook not modified)")
@@ -500,11 +515,12 @@ def main():
     parser.add_argument("category", choices=CATEGORIES + ["all"], help="Which category notebook to update")
     parser.add_argument("--dry-run", action="store_true", help="Print what would be added, don't write the notebook")
     parser.add_argument("--refresh-setup", action="store_true", help="Also rewrite the setup cells (0-5) from the current templates, keeping per-protein cells")
+    parser.add_argument("--rebuild-cells", action="store_true", help="Rebuild every per-protein cell from the current template (e.g. to pick up a layout change), discarding any manual edits to those cells")
     args = parser.parse_args()
 
     categories = CATEGORIES if args.category == "all" else [args.category]
     for category in categories:
-        generate(category, dry_run=args.dry_run, refresh_setup=args.refresh_setup)
+        generate(category, dry_run=args.dry_run, refresh_setup=args.refresh_setup, rebuild_cells=args.rebuild_cells)
 
 
 if __name__ == "__main__":
