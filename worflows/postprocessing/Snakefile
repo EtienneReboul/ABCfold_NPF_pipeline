@@ -88,6 +88,9 @@ DEEPTMHMM_CFG = config["deeptmhmm"]
 TM_ALIGN_CFG  = config["tm_alignment"]
 METADATA_CFG  = config["metadata_compress"]
 METADATA_DIR  = Path(DIRS["metadata"])
+RESCORING_CFG = config["rescoring"]
+RESCORING_DIR = Path("rescoring")
+RESCORING_SRC = RESCORING_DIR / "src"
 
 SEQ_SENTINEL = FASTA_DIR / "sequences.done"
 TOPOLOGY_JSON = INTERPRO_DIR / "tm_topology_summary.json"
@@ -151,6 +154,14 @@ print(
 # list -- no need to re-import ligand_for() here just to answer that.
 CLUSTER_BASE_PROTEINS = sorted({
     r.rsplit("__", 1)[0] for r in DONE_PROTEINS if r.endswith("__apo")
+})
+
+# Base proteins with a completed HOLOFORM run — the subset of
+# CLUSTER_BASE_PROTEINS stage 9 (rescoring_manifest) onward actually has
+# anything to rescore for (a ligand-free apoform-only protein has no
+# ligand<->residue energetics to compute at all).
+HOLO_BASE_PROTEINS = sorted({
+    r.rsplit("__", 1)[0] for r in DONE_PROTEINS if r.endswith("__holo")
 })
 
 
@@ -351,6 +362,167 @@ rule cluster_conformations:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STAGES 9-13: PyRosetta rescoring (rescoring/) — see rescoring/README.md for
+# the full pipeline design (generalized off NPF_pocket_pipeline/rescoring/'s
+# single-ligand, single-backend, 33-protein port). Rescores the cluster-
+# representative CIFs stage 8 already symlinked, not every ABCfold frame.
+#
+# IMPORTANT — run these 5 stages in a SEPARATE Snakemake invocation, WITHOUT
+# `--use-conda`: PyRosetta needs an academic-license-accepting manual install
+# step (pyrosetta-installer) that can't be scripted into a conda env, so
+# `--use-conda` would auto-create a fresh, anonymous, PyRosetta-LESS env from
+# envs/pyrosetta_rescoring.yaml for every rescoring_* rule and every one of
+# them would fail with `ModuleNotFoundError: No module named 'pyrosetta'`.
+# Set up the named `pyrosetta_rescoring` conda env once by hand instead (see
+# rescoring/README.md's Setup section) and run:
+#
+#   conda activate snakemake-env   (or wherever `snakemake` itself lives)
+#   snakemake -s worflows/postprocessing/Snakefile --cores 8 --use-conda \
+#       --until cluster_conformations              # stages 1-8, per-rule conda envs
+#
+#   conda activate pyrosetta_rescoring
+#   snakemake -s worflows/postprocessing/Snakefile --cores 8               # stages 9-13, no --use-conda
+#       (Snakemake ignores every `conda:` directive when --use-conda isn't
+#       passed, so every rescoring_* rule just uses this ambient env)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+rule rescoring_manifest:
+    # Once, after every holoform protein's cluster_conformations job has run.
+    input:
+        [str(REANN_DIR / protein / "pca_k3" / "cluster.done") for protein in HOLO_BASE_PROTEINS],
+    output:
+        str(RESCORING_DIR / "data" / "manifest.csv"),
+    log:
+        str(LOG_DIR / "rescoring_manifest.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    shell:
+        """
+        cd {RESCORING_SRC} && python make_manifest.py > ../../{log} 2>&1
+        """
+
+
+rule rescoring_prep_ligands:
+    # Once — per-ligand params/<ligand>.params for every ligand key present
+    # in the manifest, validated across backends (see prep_ligand.py).
+    input:
+        str(RESCORING_DIR / "data" / "manifest.csv"),
+    output:
+        touch(str(RESCORING_DIR / "params" / "prep_ligands.done")),
+    log:
+        str(LOG_DIR / "rescoring_prep_ligands.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    params:
+        n_validate=RESCORING_CFG["n_validate"],
+    shell:
+        """
+        cd {RESCORING_SRC} && python prep_ligand.py --n-validate {params.n_validate} > ../../{log} 2>&1
+        """
+
+
+rule rescoring_run_complex:
+    # One Snakemake job per holoform protein (not per complex_id — would be
+    # thousands of tiny DAG nodes) — internally batches that protein's own
+    # manifest rows via run_batch.py --protein, itself resumable/skip-
+    # existing so a partial prior run is safe to re-trigger.
+    input:
+        manifest=str(RESCORING_DIR / "data" / "manifest.csv"),
+        params_done=str(RESCORING_DIR / "params" / "prep_ligands.done"),
+    output:
+        touch(str(RESCORING_DIR / "results" / "per_complex" / "{protein}.done")),
+    log:
+        str(LOG_DIR / "rescoring_run_complex" / "{protein}.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    threads: RESCORING_CFG["workers_per_protein"]
+    params:
+        n_replicas=RESCORING_CFG["n_replicas"],
+        relax_cycles=RESCORING_CFG["relax_cycles"],
+        seed=RESCORING_CFG["seed"],
+    shell:
+        """
+        cd {RESCORING_SRC} && python run_batch.py \\
+            --protein      {wildcards.protein} \\
+            --workers      {threads} \\
+            --n-replicas   {params.n_replicas} \\
+            --relax-cycles {params.relax_cycles} \\
+            --seed         {params.seed} \\
+        > ../../{log} 2>&1
+        """
+
+
+rule rescoring_position_mapping:
+    # Once — full-corpus pocket "position" (1-35) <-> per-protein resnr,
+    # reused by every ligand's LDA overlay. Reads NPF_LDA_kernel directly
+    # (sibling project, not a Snakemake input — see build_position_mapping.py).
+    input:
+        str(SEQ_SENTINEL),
+    output:
+        str(RESCORING_DIR / "data" / "position_resnr_map.csv"),
+    log:
+        str(LOG_DIR / "rescoring_position_mapping.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    shell:
+        """
+        cd {RESCORING_SRC} && python build_position_mapping.py > ../../{log} 2>&1
+        """
+
+
+rule rescoring_fit_lda:
+    # Once — per-ligand-category sequence-LDA fit (GA1: NPF_LDA_kernel's
+    # real classifier's labels; nitrate/ABA: fresh one-vs-rest fits; every
+    # other ligand has too few assigned proteins in this corpus for a
+    # meaningful fit — see fit_pocket_lda.py's MIN_POSITIVES).
+    input:
+        str(SEQ_SENTINEL),
+    output:
+        touch(str(RESCORING_DIR / "data" / "fit_pocket_lda.done")),
+    log:
+        str(LOG_DIR / "rescoring_fit_lda.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    shell:
+        """
+        cd {RESCORING_SRC} && python fit_pocket_lda.py > ../../{log} 2>&1
+        """
+
+
+rule rescoring_aggregate:
+    input:
+        per_complex=[str(RESCORING_DIR / "results" / "per_complex" / f"{protein}.done") for protein in HOLO_BASE_PROTEINS],
+        position_map=str(RESCORING_DIR / "data" / "position_resnr_map.csv"),
+        lda_done=str(RESCORING_DIR / "data" / "fit_pocket_lda.done"),
+    output:
+        str(RESCORING_DIR / "results" / "lda_overlay.csv"),
+    log:
+        str(LOG_DIR / "rescoring_aggregate.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    shell:
+        """
+        cd {RESCORING_SRC} && python aggregate.py > ../../{log} 2>&1
+        """
+
+
+rule rescoring_plots:
+    input:
+        str(RESCORING_DIR / "results" / "lda_overlay.csv"),
+    output:
+        touch(str(RESCORING_DIR / "results" / "figures" / "plots.done")),
+    log:
+        str(LOG_DIR / "rescoring_plots.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    shell:
+        """
+        cd {RESCORING_SRC} && python plots.py > ../../{log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # RULE ALL — postprocess targets
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -360,6 +532,7 @@ TARGETS = (
     + [str(METADATA_DIR / protein / "model_metadata.parquet") for protein in DONE_PROTEINS]
     + ([str(METADATA_DIR / "all_models.parquet")] if DONE_PROTEINS else [])
     + [str(REANN_DIR / protein / "pca_k3" / "cluster.done") for protein in CLUSTER_BASE_PROTEINS]
+    + ([str(RESCORING_DIR / "results" / "figures" / "plots.done")] if HOLO_BASE_PROTEINS else [])
 )
 
 rule all:

@@ -1,0 +1,9 @@
+{
+  "ligand_key": "ABA",
+  "resname": "ZZ3",
+  "smiles": "CC1=CC(=O)CC([C@]1(/C=C/C(=C\\C(=O)O)/C)O)(C)C",
+  "reference_complex_id": "NPF2.14_Q9CAR9__holo_alphafold3_seed349480129_sample0",
+  "n_heavy": 19,
+  "n_total": 39,
+  "formula": "C15H20O4"
+}

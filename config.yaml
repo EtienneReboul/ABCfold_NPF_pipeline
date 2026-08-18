@@ -161,6 +161,15 @@ metadata_compress:
 tm_alignment:
   n_iter: 5                         # Procrustes iterations to converge the mean TM structure
 
+# ── Stages 9-13: PyRosetta rescoring (rescoring/) ────────────────────────────
+rescoring:
+  n_replicas: 1                     # independent FastRelax trajectories per complex (ensemble estimate)
+  relax_cycles: 1                   # FastRelax cycles per replica (see rescoring/README.md's raw-pose caveat
+                                     # before raising this — more cycles did not reliably help on real complexes)
+  seed: 42                          # base seed for run_batch.py (per-complex seeds derived from this + complex_id)
+  workers_per_protein: 4            # run_batch.py --workers, per rescoring_run_complex Snakemake job
+  n_validate: 12                    # prep_ligand.py: complexes spot-checked per ligand, spread across backends
+
 # ── Output directories ────────────────────────────────────────────────────────
 dirs:
   fasta:       "data/sequences"        # UniProt FASTA + per-protein FASTA

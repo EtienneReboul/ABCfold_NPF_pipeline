@@ -1,0 +1,9 @@
+{
+  "ligand_key": "nitrate",
+  "resname": "ZZ2",
+  "smiles": "[N+](=O)([O-])[O-]",
+  "reference_complex_id": "NPF1.1_Q8LPL2__holo_alphafold3_seed1321235154_sample1",
+  "n_heavy": 4,
+  "n_total": 4,
+  "formula": "NO3-"
+}

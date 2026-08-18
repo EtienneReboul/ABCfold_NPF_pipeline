@@ -1,0 +1,43 @@
+name: pyrosetta_rescoring
+# PyRosetta rescoring environment (rescoring/ — worflows/postprocessing/
+# Snakefile stages 9-13). Ported from NPF_pocket_pipeline/envs/pyrosetta_rescoring.yaml,
+# generalized off GA1/Boltz-2-PDB-only (see rescoring/src/ligand_fix.py's
+# module docstring for what changed and why).
+#
+# PyRosetta itself is NOT listed below: it requires an academic license and
+# isn't on conda-forge/PyPI as a plain dependency. After creating this env,
+# install it with the official installer (prompts you to accept the
+# Rosetta-Commons academic license):
+#
+#   conda env create -f envs/pyrosetta_rescoring.yaml
+#   conda activate pyrosetta_rescoring
+#   pip install pyrosetta-installer
+#   python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()"
+#
+# rdkit_to_params (pip, below) generates the ligand .params file directly
+# from an RDKit mol — the classic molfile_to_params.py script ships only
+# with the full Rosetta source/binary distribution, not the PyPI/
+# pyrosetta-installer wheel this env uses.
+#
+# No GPU needed (CPU-only FastRelax + scoring).
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+  - snakemake>=8.0          # so worflows/postprocessing/Snakefile's rescoring stages (9-13) can be
+                             # run directly from this env without --use-conda -- see that Snakefile's
+                             # "IMPORTANT" comment above stage 9 for why
+  - rdkit>=2023.9
+  - pandas>=2.0
+  - numpy>=1.26,<2.0
+  - pyarrow>=15.0          # reads Stage 1's assignments.parquet cluster tables
+  - gemmi>=0.7               # CIF -> staged PDB conversion (multi-backend ligand/protein extraction)
+  - matplotlib>=3.8
+  - seaborn>=0.13
+  - biopython>=1.83          # AlignIO for the Stockholm pocket-position alignment
+  - scikit-learn>=1.4       # shrinkage LDA fit (rescoring/src/fit_pocket_lda.py)
+  - pyyaml>=6.0
+  - pip
+  - pip:
+      - rdkit_to_params

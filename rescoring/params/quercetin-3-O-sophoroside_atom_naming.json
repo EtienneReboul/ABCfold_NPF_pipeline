@@ -1,0 +1,9 @@
+{
+  "ligand_key": "quercetin-3-O-sophoroside",
+  "resname": "ZZ8",
+  "smiles": "C1=CC(=C(C=C1C2=C(C(=O)C3=C(C=C(C=C3O2)O)O)O[C@H]4[C@@H]([C@H]([C@@H]([C@H](O4)CO)O)O)O[C@H]5[C@@H]([C@H]([C@@H]([C@H](O5)CO)O)O)O)O)O",
+  "reference_complex_id": "NPF2.8_Q3E8X3__holo_alphafold3_seed1866580655_sample2",
+  "n_heavy": 44,
+  "n_total": 74,
+  "formula": "C27H30O17"
+}
