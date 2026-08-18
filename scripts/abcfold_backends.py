@@ -47,13 +47,40 @@ def backend_of(path: Path, predictions_dir: Path) -> str:
 
 def discover_predictions(predictions_dir: Path) -> list[Path]:
     """Every model CIF ABCfold produced for one protein x form, pooled
-    across all backend subdirectories. Templates fetched by
+    across all backend subdirectories, deduplicated down to one CIF per
+    (backend, seed, sample) so every backend contributes the same number of
+    frames (20 seeds x 5 samples = 100). Templates fetched by
     scripts/fetch_mmseqs2_msa.py are cached elsewhere (data/fold_inputs/),
     never under results/abcfold/, so no template-CIF exclusion is needed
-    here — but any stray 'templates' dir is skipped defensively anyway."""
-    return sorted(
+    here — but any stray 'templates' dir is skipped defensively anyway.
+
+    Two backend quirks are collapsed here rather than left for
+    parse_frame_id() to silently double- (or 101x-) count:
+      - AlphaFold3 writes one extra '<protein>_model.cif' at the top of its
+        output dir, and RosettaFold3 writes one more of the same per seed
+        dir — each is a reformatted copy of that run/seed's single
+        best-ranked sample (identical coordinates, cleaned-up mmCIF
+        fields), not a distinct conformer. Excluded (confirmed by diffing
+        one against its source sample: same Ca xyz to 3dp, only occupancy/
+        entity-id formatting differs).
+      - OpenFold3 and RosettaFold3 each write both a raw '..._model.cif'
+        and a cleaned-up '..._model_fixed.cif' per (seed, sample) — same
+        atom count and coordinates, two files on disk. Only one is kept
+        per sample, preferring '_fixed' (the corrected one) when present.
+    """
+    all_cifs = sorted(
         c for c in predictions_dir.rglob("*.cif") if "templates" not in c.parts
     )
+
+    best_of_run_or_seed = f"{predictions_dir.name}_model"
+    per_sample = [c for c in all_cifs if c.stem != best_of_run_or_seed]
+
+    deduped: dict[tuple[Path, str], Path] = {}
+    for c in per_sample:
+        key = (c.parent, strip_model_suffix(c.stem))
+        if key not in deduped or c.stem.endswith("_fixed"):
+            deduped[key] = c
+    return sorted(deduped.values())
 
 
 def parse_frame_id(cif_path: Path, predictions_dir: Path) -> dict:

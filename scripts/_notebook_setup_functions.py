@@ -240,12 +240,34 @@ def _backend_of(path, predictions_dir):
     return "unknown"
 
 
+def _strip_model_suffix(stem):
+    """'<base>_model' / '<base>_model_fixed' -> '<base>'. Mirrors
+    scripts/abcfold_backends.py's strip_model_suffix()."""
+    return re.sub(r"_model(_fixed)?$", "", stem)
+
+
 def _discover_abcfold_cifs(run_name):
     """Every model CIF ABCfold produced for one apo/holo run, pooled across
-    all 6 backends x seed x diffusion/sample. Mirrors
-    scripts/tm_helix_alignment.py's discover_predictions()."""
+    all 6 backends x seed x diffusion/sample, deduplicated down to one CIF
+    per (backend, seed, sample). Mirrors scripts/abcfold_backends.py's
+    discover_predictions() -- see that function's docstring for why the
+    top-level '<protein>_model.cif' best-of-run/seed file (AlphaFold3,
+    RosettaFold3) and the raw/'_fixed' duplicate pair (OpenFold3,
+    RosettaFold3) are collapsed here rather than left as extra frames."""
     predictions_dir = ABCFOLD_OUT_ROOT / run_name
-    return sorted(c for c in predictions_dir.rglob("*.cif") if "templates" not in c.parts)
+    all_cifs = sorted(
+        c for c in predictions_dir.rglob("*.cif") if "templates" not in c.parts
+    )
+
+    best_of_run_or_seed = f"{predictions_dir.name}_model"
+    per_sample = [c for c in all_cifs if c.stem != best_of_run_or_seed]
+
+    deduped = {}
+    for c in per_sample:
+        key = (c.parent, _strip_model_suffix(c.stem))
+        if key not in deduped or c.stem.endswith("_fixed"):
+            deduped[key] = c
+    return sorted(deduped.values())
 
 
 def _frame_id_for_cif(cif_path, predictions_dir):
