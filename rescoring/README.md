@@ -12,6 +12,11 @@ after stage 8 (`scripts/cluster_conformations.py`) — this project only
 rescores the cluster-representative CIFs that stage already symlinked into
 `results/tm_reannotated/`/`results/ligand_pose/`, not every ABCfold frame.
 
+Stages 14-16 add a second, independent method on the same manifest: ChimeraX
+minimization + PLIP interaction detection, cross-checked against the CDD
+putative binding site and the sequence-LDA importance (see "ChimeraX
+minimization + PLIP" below).
+
 ## Setup
 
 ```bash
@@ -24,28 +29,169 @@ python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()"
 PyRosetta requires an academic license (free) — the installer prompts you to
 accept it. No GPU needed.
 
+Stages 14-16 (ChimeraX + PLIP) additionally need:
+
+- ChimeraX itself (`config.yaml`'s `chimerax_minimize.chimerax_bin`) — not a
+  conda package, install separately.
+- Docker running locally, with `pharmai/plip:latest` pulled.
+- `pliparser`: `pip install -e /Users/ereboul/projects/python-pliparser`
+  (into this same `pyrosetta_rescoring` env — pure-stdlib package, no
+  additional deps).
+
 **Running via Snakemake:** since PyRosetta's install can't be scripted into
 a conda env, run `worflows/postprocessing/Snakefile`'s rescoring stages
-(9-13) in a *second*, separate invocation from stages 1-8, from inside this
+(9-16) in a *second*, separate invocation from stages 1-8, from inside this
 env and WITHOUT `--use-conda` — see the "IMPORTANT" comment right above
-stage 9 in that Snakefile for the exact two commands.
+stage 9 in that Snakefile for the exact two commands. Also make sure the
+env's own `bin/` is at the front of `PATH` (e.g. `export
+PATH="$CONDA_PREFIX/bin:$PATH"` after activating) before invoking
+`snakemake` directly (rather than through `conda activate` in an
+interactive shell) — Snakemake's `shell:` blocks run in a subshell that
+otherwise won't necessarily resolve `python` to this env.
 
 ## Pipeline
 
 ```bash
 cd src
-python make_manifest.py                 # cluster-representative complexes -> data/manifest.csv
+python make_manifest.py --all            # every ipTM-passing holoform frame -> data/manifest.csv
+                                          # (the Snakefile's own default; omit --all for just the
+                                          # capped cluster-representative sample instead)
 python prep_ligand.py                    # per-ligand params/<ligand>.params (idempotent, safe to re-run)
 python run_batch.py --workers 6          # resumable — skips complexes with an existing results/per_complex/<id>.csv
 python build_position_mapping.py         # full-corpus pocket "position" 1-35 <-> resnr
 python fit_pocket_lda.py                 # per-ligand-category sequence-LDA fit (where enough proteins exist)
 python aggregate.py
 python plots.py
+python relax_effect_report.py            # does FastRelax actually help, by ligand/backend? see below
+
+python chimerax_run_batch.py --workers 8            # -> results/chimerax_minimized/<id>.pdb (kept)
+python plip_run_batch.py --batch-size 300 --maxthreads 8   # -> results/plip/<id>_report.txt
+python plip_analysis.py                              # -> plip_cdd_agreement.csv, plip_lda_overlay.csv
 ```
 
 (This mirrors `worflows/postprocessing/Snakefile`'s stages 9-13 — the
 Snakefile is the primary way this runs; the above is for running a step
 standalone/interactively.)
+
+## ChimeraX minimization + PLIP (stages 14-16)
+
+An alternative to relief.py's PyRosetta FastRelax: ChimeraX's own
+`minimize` command (AMBER dock-prep charges + steepest-descent/conjugate-
+gradient minimization), run on every manifest complex, then used as PLIP's
+input pose. The goal isn't to replace the PyRosetta path -- it's a third,
+independent line of evidence (alongside the Rosetta energetic hotspots and
+the sequence-only LDA classifier) on the same question: which residues
+actually matter for ligand binding? PLIP flags a residue only when it makes
+an explicit, geometrically-defined interaction (H-bond, salt bridge,
+hydrophobic contact, pi-stacking, ...), which is a different kind of
+evidence than either Rosetta's continuous two-body energy or the LDA's
+sequence-conservation signal.
+
+**Benchmark (top-20 ipTM complexes of one protein, `NPF2.14_Q9CAR9`,
+20/20 succeeded):** ChimeraX's minimizer moves the structure substantially
+more than relief.py's neighborhood-restricted, coordinate-constrained
+FastRelax does -- mean protein-wide heavy-atom RMSD 0.98 Å (range
+0.67-1.21 Å), mean ligand heavy-atom RMSD 1.10 Å (range 0.43-1.97 Å), AMBER
+energy dropping 7.6-11.6% in every case. This is expected: ChimeraX's plain
+`minimize` has no interface-local restraint the way relief.py does, so it's
+a genuine global relaxation of the whole model, not just clash relief.
+Timing: sanitize ~0.05 s/complex (negligible), ChimeraX itself 16.6-39.2 s/
+complex (mean 25.6 s/complex), serial. At 8 parallel workers this pipeline
+uses, full-corpus (~16,600 complexes) wall time is on the order of
+15-20 hours (some sub-linear scaling expected since each worker's AM1BCC
+charge step shells out to `sqm`/`antechamber`, competing for cores) and
+~11 GB of permanently-kept minimized PDBs (~694 KB/complex).
+
+### Production stages (14-16)
+
+```bash
+cd src
+python chimerax_run_batch.py --workers 8          # -> results/chimerax_minimized/<complex_id>.pdb (kept, PLIP's input)
+python plip_run_batch.py --batch-size 300 --maxthreads 8   # -> results/plip/<complex_id>_report.txt
+python plip_analysis.py                            # -> results/plip_cdd_agreement.csv, plip_lda_overlay.csv
+```
+
+- `chimerax_run_batch.py` — thread pool of `--workers` concurrent ChimeraX
+  subprocesses (each unit of work is dominated by `subprocess.run()`, which
+  releases the GIL, so threads are enough; no PyRosetta-style process-global
+  registration gotcha here, so unlike `rescoring_run_complex` this isn't
+  sharded per protein). Unlike PyRosetta's `staged_poses/` (deleted right
+  after scoring), the minimized PDB here IS the product and is kept
+  permanently — only the pre-minimization staged intermediate is scratch.
+  Resumable: skips any complex_id that already has a minimized PDB.
+- `plip_run_batch.py` — runs PLIP via Docker (`pharmai/plip:latest`) in
+  **batches**, not one container per complex: PLIP's own `-f` flag accepts
+  multiple input files plus `--maxthreads N` to process them concurrently
+  inside one container invocation, confirmed by hand this avoids Docker's
+  per-container startup overhead dominating wall time across 16k+ complexes
+  (21 test complexes: ~3 seconds for the whole batch). PLIP auto-detects the
+  ligand's HETATM records with no extra flags — no `--issmalmol`/`--chains`
+  needed, confirmed on real complexes. `--nohydro` is passed since the
+  minimized PDB already carries explicit hydrogens from ChimeraX's own
+  dock-prep. Resumable: skips complexes that already have a report.
+- `plip_analysis.py` — parses every `*_report.txt` (via the `pliparser`
+  package's `plip2dictlist`, installed editable from
+  `/Users/ereboul/projects/python-pliparser`), pools every receptor residue
+  actually involved in a real interaction, and computes:
+  - `results/plip_cdd_agreement.csv` — per protein, **precision** (of the
+    residues PLIP flags as real contacts, what fraction fall inside the 35
+    CDD/InterPro pocket positions `position_resnr_map.csv` defines?) and
+    **recall** (of those 35 positions, how many are ever actually
+    contacted?) — the direct answer to "does PLIP agree with the putative
+    CDD binding site, or disagree?" Same residue-numbering space
+    throughout (pose_prep.py never renumbers the protein chain, and
+    decompose.py's own `prot_resi` is also the original PDB numbering, so
+    no conversion is needed between Rosetta's, PLIP's, and CDD's residue
+    numbers).
+  - `results/plip_lda_overlay.csv` — per (ligand, position): PLIP contact
+    frequency across that ligand's complexes, next to sequence-LDA
+    importance (`position_importance_<ligand>.tsv`, where
+    `fit_pocket_lda.py` has a fit) — mirrors `aggregate.py`'s Rosetta-vs-LDA
+    overlay, giving the same comparison from PLIP's side.
+  - Figures: `plip_cdd_agreement.png` (precision/recall bar per protein),
+    `plip_vs_lda_scatter_<ligand>.png` for GA1/nitrate/ABA.
+
+Requires Docker running locally and the `pliparser` package installed in
+the `pyrosetta_rescoring` env (`pip install -e
+/Users/ereboul/projects/python-pliparser`).
+
+## Trying a single complex by hand
+
+The single-complex driver these production stages were scaled up from —
+useful for eyeballing one complex without running the full batch:
+
+```bash
+cd src
+python run_chimerax_try.py --complex-id <id>   # e.g. any complex_id from data/manifest.csv
+```
+
+This runs two steps, each in its own file because each needs a different
+Python environment:
+
+- `sanitize_for_chimerax.py` — runs in the normal `pyrosetta_rescoring` env.
+  Reuses `pose_prep.py`/`ligand_fix.py` unchanged (SMILES-corrected bond
+  orders, CONECT records) to stage the pose, but *first* runs a
+  ligand-geometry sanity check (bond lengths vs. covalent-radii sums, plus
+  non-bonded heavy-atom clashes) and **raises instead of writing a staged
+  PDB** if the pose looks broken — a raw ABCfold pose can have correct bond
+  orders but still implausible bond lengths/contacts, and handing that
+  straight to ChimeraX's minimizer risks a crash or garbage output. This is
+  a real, targeted check (not a port of the sibling `sanitize_cif.py`'s
+  generic proximity-bond-perception approach, which we don't need — this
+  pipeline already has correct-by-construction bond orders from the SMILES
+  template, so the only failure mode left to guard against is geometry, not
+  chemistry).
+- `chimerax_minimize_pose.py` — runs *inside* ChimeraX itself (`chimerax
+  --nogui --offscreen --script`, since `minimize`/`session` only exist in a
+  live ChimeraX process), ported from the sibling project's
+  `minimize_cif.py`, generalized to accept the staged PDB directly (instead
+  of a raw CIF) so ChimeraX's IDATM atom-typing reads the ligand's real
+  bonds from CONECT instead of re-perceiving them.
+
+Output: `results/chimerax_try/<complex_id>_staged.pdb` and
+`<complex_id>_minimized.pdb` (+ `_energy.csv` energy trajectory). Confirmed
+working end-to-end on a real complex — energy converged smoothly, ligand
+chemistry intact in the output.
 
 ## Generalized from the sibling project — what changed and why
 
@@ -147,6 +293,43 @@ or down-weight badly-clashing raw poses rather than trust any one
 complex's absolute numbers; prefer `residue_rank.csv`'s full-ensemble
 aggregates.
 
+**Quantified on the full 16,600-complex batch (2026-08-18) — `fa_rep`
+improves, `total_score` usually doesn't, and that's not a contradiction:**
+`fa_rep` drops in 99.9% of complexes (median 2230 -> 1606 REU, -28%) —
+the relief step does exactly what it's designed to do, resolve steric
+clashes. But `total_score` gets WORSE in 99.5% of complexes (median -7 ->
++1363 REU). Decomposing where that increase comes from: it's neither the
+ligand<->protein interface (median two-body sum over every contacted
+residue is ~-2 REU, negligible) nor `fa_rep` itself (which is falling, not
+rising) — it's coming from elsewhere in the repacked/minimized ~10 Å
+neighborhood entirely, almost certainly rotamer strain (`fa_dun`) from
+repacking side chains into new rotamers, or backbone-geometry strain
+(`rama_prepro`/`cart_bonded`) from the coordinate-constrained minimization
+— neither is broken out by `decompose.py` (ligand<->residue two-body terms
+only), so pin down further with a plain `sfxn.show(pose)` per-term
+breakdown on a representative complex before/after `light_relax` if this
+needs investigating further. Practical upshot: `fa_rep_raw`/
+`fa_rep_relaxed` are a good before/after clash-relief signal on their own;
+`total_relaxed` is not a "the pose got better" signal the way it would be
+for an already-refined starting structure — the two-body
+`weighted_energy`/`twobody_total` columns (what `residue_rank.csv`/
+`lda_overlay.csv` actually aggregate) are scoped to the ligand interface
+specifically and are far less affected by this than `total_score` is.
+
+`relax_effect_report.py` (`results/figures/relax_effect_{overall,by_ligand,
+by_backend}.png`, `results/relax_effect_summary.csv`) reproduces this as a
+standing pipeline stage and breaks it out per ligand and per backend — e.g.
+nitrate's small/rigid poses see the *least* fa_rep relief of any ligand
+(~20% median vs. ~30-40% for the others), and protenix/rosettafold3 start
+from (and stay at) the highest raw clash levels of the 6 backends. It also
+breaks this down per ligand-POSE cluster (`results/figures/
+relax_effect_by_pose_cluster.png`, one small panel per protein, x-axis =
+that protein's own `results/ligand_pose/.../ca_cluster_<k>/cluster_<pose>`
+sub-clusters — pose-cluster ids aren't comparable across proteins, so this
+is deliberately faceted rather than pooled) — useful for spotting a
+specific binding pose that relieves clashes noticeably worse than the
+other poses found for the same protein/conformation.
+
 ## Sign convention & REU caveat (read before interpreting anything)
 
 Unchanged from the sibling project:
@@ -175,17 +358,30 @@ rescoring/
     prep_ligand.py                 per-ligand params generation + cross-backend validation
     relief.py                       raw score -> light coord-constrained FastRelax (unchanged from sibling)
     decompose.py                     energy-graph -> per-residue tidy table (unchanged from sibling)
-    make_manifest.py                  cluster-representative complex enumeration
+    make_manifest.py                  complex enumeration (--all: every frame; default: cluster reps)
     run_complex.py                     single-complex CLI
     run_batch.py                        batch driver (resumable, multiprocessing)
     build_position_mapping.py            full-corpus pocket-position <-> resnr
     fit_pocket_lda.py                     per-ligand-category sequence-LDA fit
     aggregate.py                           pool + rank + LDA overlay, per ligand
     plots.py                                stacked bar / heatmap / Rosetta-vs-LDA scatter
+    relax_effect_report.py                   does FastRelax help, by ligand/backend/pose cluster? (see above)
+    sanitize_for_chimerax.py                  ChimeraX path: stage pose + ligand-geometry check (see above)
+    chimerax_minimize_pose.py                  ChimeraX path: runs inside ChimeraX (see above)
+    chimerax_run_batch.py                       ChimeraX path: production batch driver, stage 14 (see above)
+    plip_run_batch.py                            PLIP path: batched docker driver, stage 15 (see above)
+    plip_analysis.py                              PLIP path: CDD agreement + LDA overlay, stage 16 (see above)
+    run_chimerax_try.py                            ChimeraX path: single-complex driver (see above)
   results/
-    staged_poses/                per-complex corrected PDB fed to PyRosetta
+    staged_poses/                per-complex corrected PDB fed to PyRosetta (deleted right after
+                                  scoring -- pure scratch, regenerable from cif_path any time)
     per_complex/                  one tidy CSV per complex
     logs/                          one log per complex
-    figures/                        plots.py output
+    figures/                        plots.py / relax_effect_report.py / plip_analysis.py output
     all_contacts.csv, residue_rank.csv, lda_overlay.csv   aggregate.py output
+    relax_effect_summary.csv                              relax_effect_report.py output
+    chimerax_minimized/                                   chimerax_run_batch.py output (kept permanently -- PLIP's input)
+    plip/                                                 plip_run_batch.py output (*_report.txt per complex)
+    plip_contacts.csv, plip_cdd_agreement.csv, plip_lda_overlay.csv   plip_analysis.py output
+    chimerax_try/                                         single-complex driver output (see above)
 ```

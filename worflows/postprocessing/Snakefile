@@ -91,6 +91,8 @@ METADATA_DIR  = Path(DIRS["metadata"])
 RESCORING_CFG = config["rescoring"]
 RESCORING_DIR = Path("rescoring")
 RESCORING_SRC = RESCORING_DIR / "src"
+CHIMERAX_MIN_CFG = config["chimerax_minimize"]
+PLIP_CFG = config["plip"]
 
 SEQ_SENTINEL = FASTA_DIR / "sequences.done"
 TOPOLOGY_JSON = INTERPRO_DIR / "tm_topology_summary.json"
@@ -524,6 +526,120 @@ rule rescoring_plots:
         """
 
 
+rule rescoring_relax_report:
+    # How much does relief.py's light FastRelax actually help, broken down
+    # by ligand and by backend -- see relax_effect_report.py's module
+    # docstring and rescoring/README.md's "Raw (non-preminimized) poses"
+    # section for the full-dataset finding this makes a standing pipeline
+    # stage (fa_rep improves almost everywhere; total_score usually doesn't,
+    # for reasons unrelated to the ligand interface -- this rule is how
+    # you'd notice if that pattern is uneven across ligands/backends).
+    input:
+        str(RESCORING_DIR / "results" / "lda_overlay.csv"),
+    output:
+        touch(str(RESCORING_DIR / "results" / "figures" / "relax_effect.done")),
+    log:
+        str(LOG_DIR / "rescoring_relax_report.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    shell:
+        """
+        cd {RESCORING_SRC} && python relax_effect_report.py > ../../{log} 2>&1
+        """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGES 14-16: ChimeraX minimization + PLIP -- an experimental alternative
+# to relief.py's PyRosetta FastRelax (see rescoring/README.md's "Trying
+# ChimeraX minimization" section), scaled up to the full manifest and used
+# as PLIP's input pose. Goal: does PLIP's own explicit interaction detection
+# on these ChimeraX-minimized poses agree with the CDD-defined 35-position
+# putative binding site the sequence-LDA classifier also uses, or disagree?
+# See plip_analysis.py's module docstring.
+#
+# Same env/invocation caveat as stages 9-13 above (run from the
+# `pyrosetta_rescoring` env, WITHOUT --use-conda) -- these stages don't need
+# PyRosetta itself, but they share that env's rdkit/gemmi/pandas install
+# (plus `python-pliparser`, installed there via `pip install -e
+# /Users/ereboul/projects/python-pliparser`) for simplicity, and Docker must
+# be running locally for the PLIP stage.
+#
+# Unlike PyRosetta's staged_poses (deleted right after scoring), every
+# results/chimerax_minimized/<complex_id>.pdb is kept permanently -- it's
+# PLIP's actual input, not scratch. See chimerax_run_batch.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+rule rescoring_chimerax_minimize:
+    # One job, internally threaded (chimerax_run_batch.py --workers) across
+    # the whole manifest -- unlike rescoring_run_complex, ChimeraX
+    # minimization has no PyRosetta-style process-global registration
+    # gotcha, so there's no need to shard this per protein.
+    input:
+        str(RESCORING_DIR / "data" / "manifest.csv"),
+    output:
+        touch(str(RESCORING_DIR / "results" / "chimerax_minimized.done")),
+    log:
+        str(LOG_DIR / "rescoring_chimerax_minimize.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    threads: CHIMERAX_MIN_CFG["workers"]
+    params:
+        chimerax=CHIMERAX_MIN_CFG["chimerax_bin"],
+    shell:
+        """
+        cd {RESCORING_SRC} && python chimerax_run_batch.py \\
+            --workers  {threads} \\
+            --chimerax {params.chimerax} \\
+        > ../../{log} 2>&1
+        """
+
+
+rule plip_run:
+    # Batched docker invocations (see plip_run_batch.py's module docstring
+    # for why -- per-complex `docker run` startup overhead would otherwise
+    # dominate wall time across 16k+ complexes).
+    input:
+        str(RESCORING_DIR / "results" / "chimerax_minimized.done"),
+    output:
+        touch(str(RESCORING_DIR / "results" / "plip_run.done")),
+    log:
+        str(LOG_DIR / "plip_run.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    params:
+        image=PLIP_CFG["image"],
+        platform=PLIP_CFG["docker_platform"],
+        batch_size=PLIP_CFG["batch_size"],
+        maxthreads=PLIP_CFG["maxthreads"],
+    shell:
+        """
+        cd {RESCORING_SRC} && python plip_run_batch.py \\
+            --batch-size {params.batch_size} \\
+            --maxthreads {params.maxthreads} \\
+            --image      {params.image} \\
+            --platform   {params.platform} \\
+        > ../../{log} 2>&1
+        """
+
+
+rule plip_analysis:
+    input:
+        plip_done=str(RESCORING_DIR / "results" / "plip_run.done"),
+        position_map=str(RESCORING_DIR / "data" / "position_resnr_map.csv"),
+        lda_done=str(RESCORING_DIR / "data" / "fit_pocket_lda.done"),
+    output:
+        str(RESCORING_DIR / "results" / "plip_cdd_agreement.csv"),
+    log:
+        str(LOG_DIR / "plip_analysis.log"),
+    conda:
+        "../../envs/pyrosetta_rescoring.yaml"
+    shell:
+        """
+        cd {RESCORING_SRC} && python plip_analysis.py > ../../{log} 2>&1
+        """
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RULE ALL — postprocess targets
 # ─────────────────────────────────────────────────────────────────────────────
@@ -535,6 +651,8 @@ TARGETS = (
     + ([str(METADATA_DIR / "all_models.parquet")] if DONE_PROTEINS else [])
     + [str(REANN_DIR / protein / "pca_k3" / "cluster.done") for protein in CLUSTER_BASE_PROTEINS]
     + ([str(RESCORING_DIR / "results" / "figures" / "plots.done")] if HOLO_BASE_PROTEINS else [])
+    + ([str(RESCORING_DIR / "results" / "figures" / "relax_effect.done")] if HOLO_BASE_PROTEINS else [])
+    + ([str(RESCORING_DIR / "results" / "plip_cdd_agreement.csv")] if HOLO_BASE_PROTEINS else [])
 )
 
 rule all:

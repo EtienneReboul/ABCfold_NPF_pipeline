@@ -155,6 +155,35 @@ def _ligand_pose_clusters(protein: str) -> dict[int, list[Path]]:
     return out
 
 
+def _ligand_pose_assignments_by_ca_cluster(protein: str) -> dict[int, pd.DataFrame]:
+    """ca_cluster id -> that cluster's ligand-pose assignments.parquet
+    (unique_frame_id -> pose cluster id, for EVERY holo frame considered
+    during that ca_cluster's ligand-pose sub-clustering, not just the
+    symlinked representatives -- see _reannotate's docstring in
+    scripts/cluster_conformations.py), for whichever ca clusters reached
+    ligand-pose sub-clustering at all."""
+    protein_dir = config.LIGPOSE_ROOT / protein / config.MACRO_METHOD_TAG
+    out: dict[int, pd.DataFrame] = {}
+    if not protein_dir.exists():
+        return out
+    for ca_dir in sorted(protein_dir.glob("ca_cluster_*")):
+        m = re.match(r"ca_cluster_(\d+)$", ca_dir.name)
+        if not m:
+            continue
+        cid = int(m.group(1))
+        tag_dirs = [
+            d for d in ca_dir.iterdir()
+            if d.is_dir() and LIGAND_POSE_TAG_RE.match(d.name)
+            and ("_gmm_k" in d.name or d.name.endswith("_hist1d"))
+        ]
+        for tag_dir in tag_dirs:
+            assign_path = tag_dir / "assignments.parquet"
+            if assign_path.exists():
+                out[cid] = pd.read_parquet(assign_path)
+                break  # only one ligand-pose tag ever expected per ca_cluster
+    return out
+
+
 def _macro_cluster_dirs(protein: str) -> dict[int, Path]:
     protein_dir = config.REANN_ROOT / protein / config.MACRO_METHOD_TAG
     out: dict[int, Path] = {}
@@ -250,14 +279,22 @@ def build_all_frames_manifest_for_protein(protein: str, iptm_threshold: float = 
 
     cif_by_frame = _build_cif_by_key(f"{protein}__holo")
 
-    # ca_cluster is informational only here (not every raw frame necessarily
-    # made it into a symlinked cluster representative) -- looked up from
-    # Stage 1's own assignments.parquet when available, blank otherwise.
+    # ca_cluster / ligand_pose_cluster are looked up from Stage 1's own
+    # assignments.parquet tables (not every raw frame necessarily made it
+    # into a symlinked cluster representative, but the assignment itself
+    # covers every frame considered during clustering -- see
+    # _reannotate's docstring in scripts/cluster_conformations.py), blank
+    # where no clustering pass covers a given frame (e.g. a macro-state
+    # cluster too small to reach ligand-pose sub-clustering at all).
     ca_by_frame: dict[str, int] = {}
     assign_path = config.REANN_ROOT / protein / config.MACRO_METHOD_TAG / "assignments.parquet"
     if assign_path.exists():
         assignments = pd.read_parquet(assign_path)
         ca_by_frame = dict(zip(assignments["frame_id"], assignments["cluster"]))
+
+    pose_by_frame: dict[str, int] = {}
+    for pose_assignments in _ligand_pose_assignments_by_ca_cluster(protein).values():
+        pose_by_frame.update(dict(zip(pose_assignments["frame_id"], pose_assignments["cluster"])))
 
     rows = []
     n_missing_cif = 0
@@ -272,7 +309,7 @@ def build_all_frames_manifest_for_protein(protein: str, iptm_threshold: float = 
             "protein": protein,
             "ligand": ligand_key,
             "ca_cluster": ca_by_frame.get(unique_frame_id, ""),
-            "ligand_pose_cluster": "",
+            "ligand_pose_cluster": pose_by_frame.get(unique_frame_id, ""),
             "cif_path": str(cif_path.relative_to(config.PIPELINE_ROOT)),
         })
 

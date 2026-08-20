@@ -172,6 +172,18 @@ rescoring:
                                      # (proteins are processed one at a time, not several in parallel, at this width)
   n_validate: 12                    # prep_ligand.py: complexes spot-checked per ligand, spread across backends
 
+# ── Stages 14-16: ChimeraX minimization + PLIP (rescoring/, experimental
+# alternative to the PyRosetta path above) ───────────────────────────────────
+chimerax_minimize:
+  workers: 8                        # concurrent chimerax subprocesses (chimerax_run_batch.py --workers)
+  chimerax_bin: "/Applications/ChimeraX_Daily.app/Contents/MacOS/ChimeraX"
+
+plip:
+  image: "pharmai/plip:latest"
+  docker_platform: "linux/amd64"    # needed on Apple Silicon; leave "" for native
+  batch_size: 300                   # complexes per docker invocation (avoids per-complex container startup cost)
+  maxthreads: 8                     # PLIP's own --maxthreads (binding sites processed concurrently per invocation)
+
 # ── Output directories ────────────────────────────────────────────────────────
 dirs:
   fasta:       "data/sequences"        # UniProt FASTA + per-protein FASTA

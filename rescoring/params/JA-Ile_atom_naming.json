@@ -2,7 +2,7 @@
   "ligand_key": "JA-Ile",
   "resname": "ZZA",
   "smiles": "CC/C=C\\C[C@@H]1[C@H](CCC1=O)CC(=O)N[C@@H]([C@@H](C)CC)C(=O)O",
-  "reference_complex_id": "NPF2.6_Q9M1E1__holo_alphafold3_seed1052964652_sample0",
+  "reference_complex_id": "NPF2.6_Q9M1E1__holo_alphafold3_seed1960496082_sample1",
   "n_heavy": 23,
   "n_total": 52,
   "formula": "C18H29NO4"
