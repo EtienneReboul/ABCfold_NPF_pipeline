@@ -21,6 +21,18 @@ to the minimizer -- same "fail loudly rather than pool a possibly-wrong
 result" convention the rest of rescoring/ uses (see ligand_fix.py's own
 element-sequence check, which this reuses via build_corrected_ligand_mol).
 
+After that check passes, the staged ligand is also run through a light MM
+relax (pose_prep.py's `relax_ligand=True`, see
+ligand_fix.relax_ligand_geometry) before being handed to ChimeraX. Reason:
+even a geometry that passes the bond-length/clash check above can still
+carry enough local strain (mostly from Chem.AddHs's heuristic hydrogen
+placement, not the heavy atoms) to make ChimeraX's OWN dock-prep valence
+re-perception compute an impossible electron count and refuse to assign
+AM1-BCC charges at all -- confirmed by hand on real ABA (ZZ3) poses across
+3 backends (rosettafold3, openfold3, protenix), all fixed by this relax
+step. Same fix that resolved this class of failure for the sibling
+Boltz-2-only pipeline this project generalizes from.
+
 Usage:
     python sanitize_for_chimerax.py --complex-id <id> --out <staged.pdb>
 """
@@ -121,7 +133,8 @@ def sanitize_and_stage(complex_id: str, out_path: Path) -> Path:
             f"{complex_id}: ligand geometry looks broken, refusing to hand this pose to "
             f"ChimeraX's minimizer ({len(issues)} issue(s)):\n  " + "\n  ".join(issues)
         )
-    return pp.prepare_complex_pdb(info["cif_path"], info["ligand_chain"], info["template"], out_path)
+    return pp.prepare_complex_pdb(info["cif_path"], info["ligand_chain"], info["template"], out_path,
+                                   relax_ligand=True)
 
 
 def main():

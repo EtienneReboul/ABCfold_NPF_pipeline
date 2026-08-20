@@ -168,9 +168,57 @@ def _name_hydrogens(mol: Chem.Mol, n_heavy: int, resname: str) -> Chem.Mol:
     return mol
 
 
-def corrected_ligand_pdb_block(cif_path: Path, ligand_chain_id: str, template: Chem.Mol) -> str:
-    """Same as build_corrected_ligand_mol, serialized to a PDB block (HETATM + CONECT)."""
+def relax_ligand_geometry(mol: Chem.Mol, max_iters: int = 500) -> Chem.Mol:
+    """Light in-place MM relaxation (MMFF94, falling back to UFF) of a real
+    predicted pose's ligand conformer -- unlike build_idealized_mol (a fresh
+    ETKDG embed, used only as rdkit_to_params' geometry reference, never for
+    a real pose), this optimizes the EXISTING conformer in place, so the
+    ligand's overall position/orientation in the pocket is preserved and
+    only local bond-length/angle/torsion strain is smoothed out.
+
+    Why this exists: ChimeraX's own dock-prep re-derives hydrogens/valence
+    for the ligand from scratch as part of `minimize` (even though this mol
+    already has correct explicit Hs from Chem.AddHs) -- and Chem.AddHs's
+    addCoords placement is a geometric heuristic, not a physically relaxed
+    one. On a real predicted pose this occasionally leaves enough local
+    strain that ChimeraX's own re-perception computes an impossible (odd)
+    electron count and refuses to assign AM1-BCC charges at all
+    ("<resname>: number of electrons (N) + formal charge (+0) is odd;
+    cannot compute charges for radical species"), confirmed by hand on
+    several real ABA (ZZ3) poses across multiple backends. A light MM
+    relax first removes exactly that local strain without needing to
+    disable/replace ChimeraX's own charge step -- same fix that resolved
+    this class of failure for the sibling Boltz-2-only pipeline this
+    project generalizes from."""
+    mol = Chem.Mol(mol)  # don't mutate the caller's mol/conformer
+    try:
+        ff_props = AllChem.MMFFGetMoleculeProperties(mol)
+        if ff_props is not None:
+            ff = AllChem.MMFFGetMoleculeForceField(mol, ff_props)
+            if ff is not None:
+                ff.Minimize(maxIts=max_iters)
+                return mol
+    except Exception:
+        pass
+    try:
+        ff = AllChem.UFFGetMoleculeForceField(mol)
+        if ff is not None:
+            ff.Minimize(maxIts=max_iters)
+    except Exception:
+        pass
+    return mol
+
+
+def corrected_ligand_pdb_block(cif_path: Path, ligand_chain_id: str, template: Chem.Mol,
+                                relax: bool = False) -> str:
+    """Same as build_corrected_ligand_mol, serialized to a PDB block (HETATM + CONECT).
+    `relax=True` runs relax_ligand_geometry first -- see that function's
+    docstring; used by pose_prep.py only for the ChimeraX minimization path,
+    never for the PyRosetta path (which scores the pose's own raw predicted
+    geometry on purpose)."""
     mol = build_corrected_ligand_mol(cif_path, ligand_chain_id, template)
+    if relax:
+        mol = relax_ligand_geometry(mol)
     return Chem.MolToPDBBlock(mol)
 
 

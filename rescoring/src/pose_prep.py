@@ -100,9 +100,16 @@ def _renumber_ligand_block(pdb_block: str, start_serial: int) -> list[str]:
     return out
 
 
-def prepare_complex_pdb(cif_path: Path, ligand_chain_id: str, template: Chem.Mol, out_path: Path) -> Path:
+def prepare_complex_pdb(cif_path: Path, ligand_chain_id: str, template: Chem.Mol, out_path: Path,
+                         relax_ligand: bool = False) -> Path:
     """Write a staged PDB (protein as-is + bond-order-corrected, Rosetta-named
-    ligand) to out_path, sourced directly from one ABCfold CIF."""
+    ligand) to out_path, sourced directly from one ABCfold CIF.
+    `relax_ligand=True` runs a light MM relax on the ligand's own geometry
+    first (see ligand_fix.relax_ligand_geometry) -- used by the ChimeraX
+    minimization path (sanitize_for_chimerax.py) to avoid tripping
+    ChimeraX's own dock-prep valence re-perception; left False (default)
+    for the PyRosetta path, which scores the pose's own raw predicted
+    geometry on purpose."""
     protein_text = _protein_only_pdb_text(cif_path)
     protein_lines = _protein_lines(protein_text)
 
@@ -111,7 +118,7 @@ def prepare_complex_pdb(cif_path: Path, ligand_chain_id: str, template: Chem.Mol
         if l.startswith("ATOM"):
             max_serial = max(max_serial, int(l[6:11]))
 
-    ligand_block = lf.corrected_ligand_pdb_block(cif_path, ligand_chain_id, template)
+    ligand_block = lf.corrected_ligand_pdb_block(cif_path, ligand_chain_id, template, relax=relax_ligand)
     ligand_lines = _renumber_ligand_block(ligand_block, max_serial + 1)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

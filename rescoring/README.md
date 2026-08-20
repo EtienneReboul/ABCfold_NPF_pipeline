@@ -180,7 +180,20 @@ Python environment:
   generic proximity-bond-perception approach, which we don't need — this
   pipeline already has correct-by-construction bond orders from the SMILES
   template, so the only failure mode left to guard against is geometry, not
-  chemistry).
+  chemistry). After that check, the ligand is also given a light RDKit MM
+  relax (MMFF94, falling back to UFF -- `ligand_fix.relax_ligand_geometry`,
+  in-place on the pose's own conformer, not a fresh re-embed) before being
+  staged. **Fixes a real, recurring ChimeraX failure**: even a pose that
+  passes the bond-length/clash check can carry enough local strain (mostly
+  from `Chem.AddHs`'s heuristic hydrogen placement) that ChimeraX's own
+  dock-prep valence re-perception computes an impossible electron count and
+  refuses to assign AM1-BCC charges (`"<resname>: number of electrons (N) +
+  formal charge (+0) is odd"`) — hit on ~4% of complexes in the first full
+  batch (all ABA/ZZ3, spread across rosettafold3/openfold3/protenix
+  backends). Confirmed by hand: the same 3 backend/pose combinations that
+  failed before the relax step all minimize cleanly after it. Same fix that
+  resolved this class of failure for the sibling Boltz-2-only pipeline this
+  project generalizes from.
 - `chimerax_minimize_pose.py` — runs *inside* ChimeraX itself (`chimerax
   --nogui --offscreen --script`, since `minimize`/`session` only exist in a
   live ChimeraX process), ported from the sibling project's
