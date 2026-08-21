@@ -1,0 +1,9 @@
+{
+  "ligand_key": "glycylglycine",
+  "resname": "ZZ7",
+  "smiles": "C(C(=O)NCC(=O)O)N",
+  "reference_complex_id": "NPF8.3_P46032__holo_alphafold3_seed474428815_sample1",
+  "n_heavy": 9,
+  "n_total": 17,
+  "formula": "C4H8N2O3"
+}

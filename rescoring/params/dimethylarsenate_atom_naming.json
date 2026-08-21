@@ -1,0 +1,9 @@
+{
+  "ligand_key": "dimethylarsenate",
+  "resname": "ZZ6",
+  "smiles": "C[As](=O)(C)[O-]",
+  "reference_complex_id": "NPF8.1_Q9M390__holo_boltz_boltz_NPF8.1_Q9M390__holo_boltz_results_NPF8.1_Q9M390__holo_data_seed-1002453201_predictions_NPF8.1_Q9M390__holo_data_seed-1002453201_NPF8.1_Q9M390__holo_data_seed-1002453201_model_0",
+  "n_heavy": 5,
+  "n_total": 11,
+  "formula": "C2H6AsO2-"
+}

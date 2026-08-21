@@ -155,6 +155,16 @@ Requires Docker running locally and the `pliparser` package installed in
 the `pyrosetta_rescoring` env (`pip install -e
 /Users/ereboul/projects/python-pliparser`).
 
+**Known accepted limitation: `dimethylarsenate` always fails in this path.**
+ChimeraX's dock-prep charge step shells out to AmberTools' antechamber for
+AM1-BCC charges, and antechamber's GAFF force field has no parameters for
+arsenic (not a mainstream drug-discovery element, so untested/unsupported
+upstream) — every dimethylarsenate complex fails with `"Failure running
+ANTECHAMBER for residue ZZ6"`, unrelated to (and not fixed by) the
+MM-relax step below. Not pursued further — PyRosetta rescoring (stages
+9-13) still scores this ligand fine; only the ChimeraX/PLIP comparison
+path is affected.
+
 ## Trying a single complex by hand
 
 The single-complex driver these production stages were scaled up from —

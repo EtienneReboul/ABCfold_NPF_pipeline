@@ -1,0 +1,9 @@
+{
+  "ligand_key": "glycerate",
+  "resname": "ZZ5",
+  "smiles": "C([C@H](C(=O)[O-])O)O",
+  "reference_complex_id": "NPF8.4_Q84WG0__holo_alphafold3_seed1789707588_sample1",
+  "n_heavy": 7,
+  "n_total": 12,
+  "formula": "C3H5O4-"
+}

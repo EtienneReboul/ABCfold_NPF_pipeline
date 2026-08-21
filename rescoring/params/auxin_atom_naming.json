@@ -1,0 +1,9 @@
+{
+  "ligand_key": "auxin",
+  "resname": "ZZ4",
+  "smiles": "C1=CC=C2C(=C1)C(=CN2)CC(=O)O",
+  "reference_complex_id": "NPF7.1_Q3E9B5__holo_alphafold3_seed1136049791_sample0",
+  "n_heavy": 13,
+  "n_total": 22,
+  "formula": "C10H9NO2"
+}

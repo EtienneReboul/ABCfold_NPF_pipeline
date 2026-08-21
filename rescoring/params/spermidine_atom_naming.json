@@ -1,0 +1,9 @@
+{
+  "ligand_key": "spermidine",
+  "resname": "ZZ9",
+  "smiles": "C(CCNCCCN)CN",
+  "reference_complex_id": "NPF6.4_Q9LVE0__holo_boltz_boltz_NPF6.4_Q9LVE0__holo_boltz_results_NPF6.4_Q9LVE0__holo_data_seed-101272384_predictions_NPF6.4_Q9LVE0__holo_data_seed-101272384_NPF6.4_Q9LVE0__holo_data_seed-101272384_model_1",
+  "n_heavy": 10,
+  "n_total": 29,
+  "formula": "C7H19N3"
+}
