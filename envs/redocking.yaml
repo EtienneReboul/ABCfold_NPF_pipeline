@@ -1,0 +1,35 @@
+name: redocking
+# HADDOCK3 physics-based redocking environment (redocking/ pilot). See
+# redocking/README.md for the full pipeline and rationale.
+#
+# haddock3 itself is NOT listed as a conda dependency: it's pip-installed
+# below and bundles a precompiled CNS binary automatically
+# (https://www.bonvinlab.org/haddock3/CNS.html). If that binary errors on
+# this cluster's architecture (missing libraries -- a known issue on some
+# HPC setups), CNS needs a manual recompile (gcc/gfortran/csh) and the
+# resulting binary copied to this env's
+# lib/python*/site-packages/haddock/bin/cns -- see docs/CNS.md in the
+# haddock3 repo for the exact steps, and redocking/README.md's Setup
+# section once that's actually needed here.
+#
+# No GPU needed (CNS is CPU-only) -- unlike abcfold/pyrosetta_rescoring,
+# this env is fine on a login node or a plain CPU partition.
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.10             # haddock3's own documented minimum-tested version as of this port
+  - rdkit>=2023.9            # build_ga1_from_ga3.py's MCS-constrained embed
+  - gemmi>=0.7               # extract_receptor_pdb.py / compare_to_abcfold.py CIF/PDB handling
+  - openbabel>=3.1           # prep_ligand_topology.py's ligand standardization step
+  - numpy>=1.26,<2.0
+  - pandas>=2.0
+  - pyyaml>=6.0
+  - gcc                      # CNS recompile fallback, if the pip-bundled binary doesn't run here
+  - gfortran
+  - tcsh                     # CNS build script requires csh/tcsh, not bash
+  - pip
+  - pip:
+      - haddock3              # bundles a precompiled CNS binary; also provides the haddock3-restraints CLI
+                               # (define_active_passive.py's passive_from_active / active_passive_to_ambig)
+      - biobb_chemistry        # AcpypeParamsCNS (prep_ligand_topology.py) -- wraps acpype+antechamber

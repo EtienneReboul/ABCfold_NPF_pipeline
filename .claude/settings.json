@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(jupyter nbconvert *)",
+      "Read(//Users/ereboul/projects/NPF-ab-initio-modelling/NPF_LDA_kernel/**)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline && grep -rn -i \"cdd\\\\|cd-search\\\\|cdsearch\\\\|rpsblast\\\\|rps-blast\\\\|interpro\\\\|conserved\" --include=\"*.smk\" --include=\"Snakefile\" --include=\"*.py\" -l . 2>/dev/null | grep -v \".snakemake/\")",
+      "Read(//Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline/**)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_LDA_kernel && find data results config -type f | sort)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline && grep -n -i \"cdd\\\\|cd-search\\\\|cdsearch\\\\|rpsblast\\\\|interpro\\\\|conserved\" Snakefile)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_LDA_kernel && echo \"=== config/config.yaml ===\" && cat -n config/config.yaml && echo \"=== hc/labels.tsv ===\" && cat -n results/ga_classifier/hc/labels.tsv && echo \"=== full labels.tsv \\(head\\) ===\" && cat -n results/ga_classifier/labels.tsv | head -20)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_LDA_kernel && find data/msa -maxdepth 3 2>&1; echo \"---mutagenesis---\"; cat -n results/mutagenesis_positions.csv; echo \"---interpro sample non-importer---\"; head -c 500 data/interpro/NPF6.1_Q9LYR6_binding_site_residues.txt; echo; echo \"---sequences.fasta grep NPF6.1---\"; grep -A1 \"NPF6.1\" data/sequences/npf_arabidopsis.fasta | head -5)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline && grep -n -A10 \"^interproscan:\" config.yaml; echo \"---local---\"; [ -f config.local.yaml ] && grep -n -A10 \"interproscan\" config.local.yaml; echo \"---active/passive search---\"; grep -rn -i \"active_res\\\\|passive_res\\\\|active residue\\\\|passive residue\\\\|haddock\" . --include=\"*.py\" --include=\"*.yaml\" --include=\"*.yml\" --include=\"*.md\" 2>/dev/null | grep -v \".snakemake/\")",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_LDA_kernel && ls -la data/msa/pdb data/msa/a3m data/msa/sh 2>&1 | head -60)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline && grep -n -B2 -A6 \"pocket_max_distance\\\\|pocket_force\" config.yaml; echo \"---envs---\"; find . -iname \"environment*.yml\" -o -iname \"*.yaml\" -path \"*env*\" 2>/dev/null | grep -v \".snakemake/\" | grep -v \".git/\")",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_LDA_kernel && head -3 data/sequences/NPF6.1_Q9LYR6.fasta && echo \"---\" && head -3 data/sequences/NPF8.1_Q9M390.fasta && echo \"--- any pdb files anywhere in repo \\(excluding .snakemake conda envs\\) ---\" && find . -iname \"*.pdb\" -not -path \"./.snakemake/*\" && find . -iname \"*alphafold*\" -o -iname \"*af2*\" -not -path \"./.snakemake/*\" 2>/dev/null)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline && grep -n \"conda:\" Snakefile | head -20; echo \"---\"; cat envs/preprocessing.yaml; echo \"---pipeline---\"; cat envs/pipeline.yaml)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_LDA_kernel && grep -n \"5A2N\\\\|NRT1.1\\\\|CHL1\" RESULTS.md README.md config/config.yaml workflow/scripts/*.py 2>/dev/null | head -20)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline && sed -n '255,300p' Snakefile)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline && sed -n '1,50p' rescoring/src/build_position_mapping.py; echo \"====\"; head -5 rescoring/data/lda_kernel_inputs/pocket_sites_cdd_msa.tsv; echo \"====\"; grep -n \"cdd\\\\|pocket\" rescoring/src/aggregate.py | head -30; echo \"====\"; grep -n \"cdd\\\\|pocket\" rescoring/src/config.py | head -30)",
+      "Bash(cd /Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline && find . -iname \"extract_cdd*\" 2>/dev/null | grep -v \".snakemake/\"; wc -l scripts/make_boltz_input.py)",
+      "Read(//Users/ereboul/projects/NPF-ab-initio-modelling/NPF_pocket_pipeline/scripts/**)",
+      "Bash(pip show *)",
+      "Bash(conda env *)",
+      "Bash(/Users/ereboul/miniconda3/envs/pyrosetta_rescoring/bin/python build_ga1_from_ga3.py)"
+    ]
+  }
+}
