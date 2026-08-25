@@ -1,5 +1,6 @@
 # ── Personal configuration (never commit) ────────────────────────────────────
 config.local.yaml
+.claude/settings.json
 
 # ── Pipeline runtime outputs ──────────────────────────────────────────────────
 data/sequences/
@@ -7,7 +8,14 @@ data/fold_inputs/
 data/interpro/
 results/
 logs/
-redocking/data/_cache/
+
+# redocking/ generated output (GA1 sdf/log, manifest.csv, receptor PDBs,
+# restraints, cached downloads, acpype CNS topology/params) -- all
+# regenerable from redocking/src/*.py against upstream pipeline data, none
+# of it is source. Only redocking/src/, README.md, and envs/redocking.yaml
+# are tracked.
+redocking/data/
+redocking/ligand_topology/
 
 # ── Snakemake internals ───────────────────────────────────────────────────────
 .snakemake/

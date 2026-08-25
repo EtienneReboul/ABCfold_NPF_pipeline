@@ -1,5 +1,0 @@
-GA3 CCD source: /Users/ereboul/projects/NPF-ab-initio-modelling/ABCfold_NPF_pipeline/redocking/data/_cache/GA3.cif
-GA1 SMILES: C[C@]12[C@@H](O)CC[C@@]3(OC1=O)[C@@H]4CC[C@]5(O)C[C@]4(CC5=C)[C@H]([C@H]23)C(=O)O
-MCS: 21/25 GA1 heavy atoms matched (84.0%), 24 bonds, SMARTS: [#8&!R]-&!@[#6&!R](=&!@[#8&!R])-&!@[#6]1-&@[#6]2-&@[#6](-&@[#6]3-&@[#6]-&@14-&@[#6]-&@[#6](-&@[#6](-&@[#6]-&@4)(-&!@[#8&!R])-&@[#6]-&@[#6]-&@3)=&!@[#6&!R])-&@[#8]-&@[#6](-&@[#6]-&@2-&!@[#6&!R])=&!@[#8&!R]
-Tether RMSD (matched atoms vs. GA3 real coords): 0.047 A
-Sanity check: CLEAN

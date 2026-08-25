@@ -1,4 +1,0 @@
-complex_id,protein,role,form,receptor_cif
-NPF2.10_Q944G5__holo_alphafold3_seed1000684470_sample0,NPF2.10_Q944G5,importer,holo,results/abcfold/NPF2.10_Q944G5__holo/alphafold3_NPF2.10_Q944G5__holo/seed-1000684470_sample-0/NPF2.10_Q944G5__holo_seed-1000684470_sample-0_model.cif
-NPF6.1_Q9LYR6__apo_seed-1075283533_sample-0,NPF6.1_Q9LYR6,non_importer,apo,results/abcfold/NPF6.1_Q9LYR6__apo/alphafold3_NPF6.1_Q9LYR6__apo/seed-1075283533_sample-0/NPF6.1_Q9LYR6__apo_seed-1075283533_sample-0_model.cif
-NPF8.1_Q9M390__apo_seed-1141960377_sample-0,NPF8.1_Q9M390,non_importer,apo,results/abcfold/NPF8.1_Q9M390__apo/alphafold3_NPF8.1_Q9M390__apo/seed-1141960377_sample-0/NPF8.1_Q9M390__apo_seed-1141960377_sample-0_model.cif
