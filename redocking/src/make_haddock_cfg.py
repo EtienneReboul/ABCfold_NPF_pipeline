@@ -38,8 +38,18 @@ in its own `defaults.yaml`, defaulting to empty string). Not needed for
 `--autotoppar`, since that branch's own propagation already covers it for
 this pilot's single-model (non-ensemble) case.
 
-Output: results/haddock_runs/<complex_id>/run.cfg (haddock3's own run
-directory is created by haddock3 itself on execution, not here).
+**Confirmed by hand (2026-08-25)**: the generated `.cfg` must NOT live
+inside `run_dir` itself. HADDOCK3 refuses to write into a `run_dir` that
+already exists and is non-empty (`--restart` required otherwise) -- a run
+whose only pre-existing content was its own `run.cfg` still failed with
+that same "exists and is not empty" error, in ~90 seconds, on all 3 pilot
+SLURM jobs the first time this was tried. Cfg files live in a sibling
+`_cfgs/` directory instead; `run_dir` itself must stay untouched/absent
+until HADDOCK3 creates it.
+
+Output: results/haddock_runs/_cfgs/<complex_id>.cfg (the `run_dir =`
+line inside it points at results/haddock_runs/<complex_id>/, which
+HADDOCK3 creates fresh on execution -- never pre-create or write into it).
 """
 from __future__ import annotations
 
@@ -152,12 +162,13 @@ def main() -> None:
     with config.MANIFEST_CSV.open() as f:
         rows = list(csv.DictReader(f))
 
+    cfgs_dir = config.HADDOCK_RUNS_DIR / "_cfgs"
     for row in rows:
         complex_id = row["complex_id"]
         receptor_pdb = RECEPTOR_DIR / f"{complex_id}_receptor.pdb"
         ambig_tbl = RESTRAINTS_DIR / f"{complex_id}_ambig.tbl"
         run_dir = config.HADDOCK_RUNS_DIR / complex_id
-        out_cfg = run_dir / "run.cfg"
+        out_cfg = cfgs_dir / f"{complex_id}.cfg"
         make_cfg(complex_id, receptor_pdb, ligand_pdb, ambig_tbl, run_dir, out_cfg, args.autotoppar)
         print(f"{complex_id}: wrote {out_cfg}")
 

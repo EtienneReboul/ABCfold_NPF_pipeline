@@ -1,23 +1,25 @@
 """
 redocking/src/run_haddock_batch.py
 =====================================
-Stage 6: submit each manifest complex's HADDOCK3 run
-(results/haddock_runs/<complex_id>/run.cfg, from make_haddock_cfg.py) as
-its own SLURM job on the IFB cluster -- same cluster ABCfold's own cofolding
-runs on (worflows/processing/submit_abcfold.sh), but far lighter-weight:
-HADDOCK3/CNS is CPU-only (no GPU/Docker/Singularity needed), and this
-pilot is 3 complexes, not a large array, so one `sbatch` per complex_id is
-enough -- revisit as a proper job array (submit_abcfold.sh's --batch-size
-chunking pattern) only if/when this pilot scales past a handful of
-complexes.
+Stage 6: submit every manifest complex's HADDOCK3 run
+(results/haddock_runs/_cfgs/<complex_id>.cfg, from make_haddock_cfg.py) as
+ONE SLURM job array on the IFB cluster -- same cluster ABCfold's own
+cofolding runs on, and the same array + manifest-file pattern
+worflows/processing/submit_abcfold.sh already uses (one line per task,
+`SLURM_ARRAY_TASK_ID` indexes into it inside the job script) -- reused
+here rather than one `sbatch` call per complex, since this pipeline is
+scaling from a 3-complex pilot to a ~24+ complex batch and a plain loop of
+individual submissions gets unwieldy (and harder to monitor/cancel as one
+unit) at that size. Each array task = exactly one HADDOCK3 run (no
+per-task batching the way submit_abcfold.sh's BATCH_SIZE does -- a single
+HADDOCK3 run is already a substantial, non-trivial unit of work, unlike
+one ABCfold prediction).
 
-**Partition/account/time defaults below are PLACEHOLDERS**, not confirmed
-against IFB's actual CPU-partition names the way submit_abcfold.sh's
-`PARTITION="gpu"` was confirmed for GPU jobs (see that script's own
-"CONFIRMED on IFB" comment) -- check `sinfo` on the cluster and override
-via --partition/--account before the first real submission.
+HADDOCK3/CNS is CPU-only (no GPU/Docker/Singularity needed) -- far
+lighter-weight than the ABCfold array this mirrors.
 
-Requires: haddock3 installed in a conda env on the cluster
+**Partition confirmed via `sinfo` on IFB (2026-08-25): "fast"** (default
+below). Requires haddock3 installed in a conda env on the cluster
 (envs/redocking.yaml), resolved by absolute env path (not `conda
 activate`), same reasoning submit_abcfold.sh's own inline comment gives
 for avoiding conda activation inside a job script.
@@ -31,13 +33,16 @@ from pathlib import Path
 
 import config
 
-DEFAULT_PARTITION = "fast"  # PLACEHOLDER -- confirm the real CPU partition name via `sinfo` on IFB
-DEFAULT_CPUS = 8            # HADDOCK3 parallelizes across models within a run via multiprocessing
-DEFAULT_MEM = "16G"
+DEFAULT_PARTITION = "fast"
+DEFAULT_CPUS = 32
+DEFAULT_MEM = "128G"
 DEFAULT_TIME = "08:00:00"
 DEFAULT_ENV_NAME = "redocking"
+DEFAULT_MAX_CONCURRENT = 8  # array tasks running at once -- 8*32=256 cores, a considerate
+                            # chunk of the shared "fast" partition rather than the whole thing
+                            # at once; raise with --max-concurrent if the queue allows more.
 
-SLURM_SCRIPT_TEMPLATE = """\
+ARRAY_JOB_SCRIPT_TEMPLATE = """\
 #!/usr/bin/env bash
 #SBATCH --partition={partition}
 #SBATCH --nodes=1
@@ -46,35 +51,59 @@ SLURM_SCRIPT_TEMPLATE = """\
 #SBATCH --mem={mem}
 #SBATCH --time={time}
 {account_line}
-#SBATCH --job-name=redock_{complex_id}
-#SBATCH --output={log_dir}/{complex_id}.log
-#SBATCH --error={log_dir}/{complex_id}.err
+#SBATCH --array=0-{last_task}%{max_concurrent}
+#SBATCH --job-name=redock_array
+#SBATCH --output={log_dir}/task_%a.log
+#SBATCH --error={log_dir}/task_%a.err
 set -euo pipefail
 
 HADDOCK3="{haddock3_bin}"
-echo "[$(date)] redocking {complex_id}"
+MANIFEST="{manifest}"
+TASK_ID=$SLURM_ARRAY_TASK_ID
+LINE=$(( TASK_ID + 1 ))
+
+CFG=$(sed -n "${{LINE}}p" "$MANIFEST")
+if [[ -z "$CFG" ]]; then
+    echo "[$(date)] task $TASK_ID: no manifest line $LINE -- nothing to do"
+    exit 0
+fi
+COMPLEX_ID=$(basename "$CFG" .cfg)
+
+echo "[$(date)] task $TASK_ID: redocking $COMPLEX_ID"
+echo "  cfg: $CFG"
 echo "  haddock3: $HADDOCK3"
-"$HADDOCK3" "{run_cfg}"
-echo "[$(date)] done {complex_id}"
+"$HADDOCK3" "$CFG"
+echo "[$(date)] task $TASK_ID: done $COMPLEX_ID"
 """
 
 
-def submit_complex(complex_id: str, run_cfg: Path, log_dir: Path, haddock3_bin: str,
-                    partition: str, cpus: int, mem: str, time: str, account: str, dry_run: bool) -> None:
+def write_manifest(cfg_paths: list[Path], manifest_path: Path) -> Path:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("\n".join(str(p) for p in cfg_paths) + "\n")
+    return manifest_path
+
+
+def submit_array(cfg_paths: list[Path], manifest_path: Path, log_dir: Path, haddock3_bin: str,
+                  partition: str, cpus: int, mem: str, time: str, account: str,
+                  max_concurrent: int, dry_run: bool) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     account_line = f"#SBATCH --account={account}" if account else ""
-    script = SLURM_SCRIPT_TEMPLATE.format(
+    script = ARRAY_JOB_SCRIPT_TEMPLATE.format(
         partition=partition, cpus=cpus, mem=mem, time=time, account_line=account_line,
-        complex_id=complex_id, log_dir=log_dir, haddock3_bin=haddock3_bin, run_cfg=run_cfg,
+        last_task=len(cfg_paths) - 1, max_concurrent=max_concurrent, log_dir=log_dir,
+        haddock3_bin=haddock3_bin, manifest=manifest_path,
     )
-    script_path = run_cfg.parent / "submit.sh"
+    script_path = manifest_path.parent / "submit_array.sh"
     script_path.write_text(script)
+
+    print(f"{len(cfg_paths)} complexes -> {manifest_path}")
+    print(f"Array script: {script_path} (--array=0-{len(cfg_paths) - 1}%{max_concurrent})")
 
     if dry_run:
         print(f"[dry-run] would submit {script_path}")
         return
     subprocess.run(["sbatch", str(script_path)], check=True)
-    print(f"submitted {complex_id} ({script_path})")
+    print("submitted")
 
 
 def main() -> None:
@@ -84,6 +113,8 @@ def main() -> None:
     parser.add_argument("--mem", default=DEFAULT_MEM)
     parser.add_argument("--time", default=DEFAULT_TIME)
     parser.add_argument("--account", default="")
+    parser.add_argument("--max-concurrent", type=int, default=DEFAULT_MAX_CONCURRENT,
+                         help="Max array tasks running at once (SLURM's --array=0-N%%K throttle).")
     parser.add_argument("--env-name", default=DEFAULT_ENV_NAME,
                          help="Conda env name haddock3 is installed in (resolved to an absolute "
                               "bin/haddock3 path, IFB's ~/.condarc envs_dirs convention -- see "
@@ -93,18 +124,24 @@ def main() -> None:
     args = parser.parse_args()
 
     haddock3_bin = f"/shared/projects/npf_abinitio/conda/envs/{args.env_name}/bin/haddock3"
+    cfgs_dir = config.HADDOCK_RUNS_DIR / "_cfgs"
     log_dir = config.HADDOCK_RUNS_DIR / "_slurm_logs"
 
     with config.MANIFEST_CSV.open() as f:
         rows = list(csv.DictReader(f))
 
+    cfg_paths = []
     for row in rows:
-        complex_id = row["complex_id"]
-        run_cfg = config.HADDOCK_RUNS_DIR / complex_id / "run.cfg"
-        if not run_cfg.exists():
-            raise FileNotFoundError(f"{run_cfg} not found -- run make_haddock_cfg.py first.")
-        submit_complex(complex_id, run_cfg, log_dir, haddock3_bin,
-                        args.partition, args.cpus, args.mem, args.time, args.account, args.dry_run)
+        cfg_path = cfgs_dir / f"{row['complex_id']}.cfg"
+        if not cfg_path.exists():
+            raise FileNotFoundError(f"{cfg_path} not found -- run make_haddock_cfg.py first.")
+        cfg_paths.append(cfg_path)
+
+    manifest_path = cfgs_dir / "array_manifest.txt"
+    write_manifest(cfg_paths, manifest_path)
+    submit_array(cfg_paths, manifest_path, log_dir, haddock3_bin,
+                 args.partition, args.cpus, args.mem, args.time, args.account,
+                 args.max_concurrent, args.dry_run)
 
 
 if __name__ == "__main__":

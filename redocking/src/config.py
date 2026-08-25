@@ -43,11 +43,12 @@ PROTEIN_CHAIN = "A"
 # GA1-specific for now.
 LIGAND_KEY = "GA1"
 
-# GA3's PDB Chemical Component Dictionary id + a real bound structure to
-# pull ring-pucker-realistic coordinates from (not the CCD-idealized
-# conformer) -- see redocking/README.md "GA1 ligand structure" section.
+# GA3's RCSB Chemical Component Dictionary id -- its own "model"
+# coordinates (real deposited structure, currently PDB 3ED1 per the CCD
+# entry's own pdbx_model_coordinates_db_code) are used directly, not the
+# CCD's separate idealized conformer -- see redocking/README.md "GA1
+# ligand structure" section and build_ga1_from_ga3.py.
 GA3_CCD_ID = "GA3"
-GA3_TEMPLATE_PDB_ID = "2ZSH"  # GID1-GA3-DELLA gibberellin receptor complex
 
 # Sibling project the CDD active-residue annotation is read from -- not a
 # subdirectory of this pipeline, read directly (never written to). Same
@@ -64,27 +65,49 @@ def load_ligand_smiles(ligand_key: str = LIGAND_KEY) -> str:
     return cfg["ligands"][ligand_key]["smiles"]
 
 
+def load_importers() -> list[str]:
+    """Gene names (e.g. 'NPF2.10') NPF_LDA_kernel's config.yaml flags as
+    hc_importers -- the positive-control candidate pool. NOT all of these
+    have a GA1-holoform ABCfold pose in THIS pipeline (some were only
+    ever co-folded with a different assigned ligand here, e.g. nitrate/ABA
+    -- see make_manifest.py's coverage filtering, which is what actually
+    decides the usable subset, not this list alone)."""
+    cfg = yaml.safe_load(NPF_LDA_KERNEL_CONFIG.read_text())
+    return cfg["hc_importers"]
+
+
 def load_non_importers() -> list[str]:
     """Gene names (e.g. 'NPF6.1') NPF_LDA_kernel's config.yaml flags as
-    hc_non_importers -- the negative-control receptor pool for this pilot."""
+    hc_non_importers -- the negative-control candidate pool. See
+    load_importers()'s note -- coverage filtering still applies (a few of
+    these have no CDD pocket annotation, see make_manifest.py)."""
     cfg = yaml.safe_load(NPF_LDA_KERNEL_CONFIG.read_text())
     return cfg["hc_non_importers"]
+
+
+def has_cdd_residues(protein_name: str) -> bool:
+    import json
+    summary = json.loads(CDD_SUMMARY_JSON.read_text())
+    return protein_name in summary and bool(summary[protein_name].get("residues"))
 
 
 def load_cdd_residues(protein_name: str) -> list[int]:
     """CDD/InterPro putative pocket residues for one protein (structure
     numbering, no remapping needed) -- see NPF_pocket_pipeline/scripts/
     run_interproscan.py's extract_binding_site_residues(). Raises if this
-    protein hasn't been CDD-annotated there yet (this pilot only covers
-    proteins already present in that summary; re-running InterProScan for a
-    new protein is out of scope here -- do it in NPF_pocket_pipeline)."""
+    protein hasn't been CDD-annotated there yet, OR was annotated but
+    InterProScan found zero domain matches for it (confirmed by hand for
+    NPF4.1/NPF8.5/NPF5.9: their cached *.json has "matches": [] -- a real
+    completed result, not a pending query; re-running InterProScan for
+    these specific proteins would not be expected to find anything new).
+    Callers that need to skip rather than fail on this should check
+    has_cdd_residues() first -- see make_manifest.py."""
     import json
     summary = json.loads(CDD_SUMMARY_JSON.read_text())
-    if protein_name not in summary:
+    if not has_cdd_residues(protein_name):
         raise KeyError(
-            f"{protein_name!r} not in {CDD_SUMMARY_JSON} -- run NPF_pocket_pipeline's "
-            f"CDD/InterProScan stage for it first (see that project's Snakefile rule "
-            f"run_interproscan)."
+            f"{protein_name!r} has no CDD residues in {CDD_SUMMARY_JSON} (either not "
+            f"annotated at all, or InterProScan found zero domain matches for it)."
         )
     return sorted(summary[protein_name]["residues"])
 
