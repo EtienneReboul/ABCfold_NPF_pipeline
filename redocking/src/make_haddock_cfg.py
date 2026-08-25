@@ -16,6 +16,23 @@ Two ligand-topology modes, selected with --autotoppar:
     acpype dependency. Fast cross-check / fallback if the acpype route
     isn't validated yet (see prep_ligand_topology.py's module docstring).
 
+**Confirmed by hand at production scale (2026-08-25)**: `[ilrmsdmatrix]`
+with the global `ncores = 32` crashes deterministically, every time,
+isolated or not: `FileNotFoundError: ilrmsd_0.matrix` inside
+`_rearrange_output` (`haddock/modules/analysis/ilrmsdmatrix/__init__.py`),
+which blindly does `for core in range(ncores): open(f"ilrmsd_{core}.matrix")`
+with no tolerance mechanism at all (unlike the CNS modules) -- worker
+index 0's own output specifically, not a random one, reproduced
+identically both inside the 8-way-concurrent array AND in a fully
+isolated single-job run with nothing else competing for the filesystem,
+ruling out cross-job contention as the cause. Fix: override `ncores = 1`
+inside `[ilrmsdmatrix]`'s own section (module-scoped, same pattern as
+`ligand_param_fname`/`tolerance`) -- confirmed this makes the crash
+disappear entirely via `haddock3 --restart <ilrmsdmatrix's step number>`
+on the same failed run, and costs no real wall-clock time since this
+module's own RMSD computation is lightweight (sub-second even at
+ncores=32) -- CNS minimization, not this step, is the actual bottleneck.
+
 **Confirmed by hand at production scale (2026-08-25)**: `[rigidbody]`/
 `[flexref]`'s per-module `tolerance` parameter (default 5%, max 99) --
 the max percentage of a step's CNS jobs allowed to produce no output
@@ -126,6 +143,7 @@ tolerance = {tolerance}
 [caprieval]
 
 [ilrmsdmatrix]
+ncores = 1
 
 [clustrmsd]
 criterion = "maxclust"
