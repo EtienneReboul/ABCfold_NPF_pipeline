@@ -28,8 +28,15 @@ dependencies:
   - gcc                      # CNS recompile fallback, if the pip-bundled binary doesn't run here
   - gfortran
   - tcsh                     # CNS build script requires csh/tcsh, not bash
+  - ambertools               # antechamber/sqm -- acpype's AM1-BCC charge step needs these on PATH;
+                               # NOT bundled by biobb_chemistry or by the `acpype` PyPI package itself
+                               # (confirmed the hard way: AcpypeParamsCNS fails with a bare "acpype:
+                               # command not found" / then an antechamber-not-found failure without
+                               # both of these two pip/conda deps present)
   - pip
   - pip:
       - haddock3              # bundles a precompiled CNS binary; also provides the haddock3-restraints CLI
                                # (define_active_passive.py's passive_from_active / active_passive_to_ambig)
-      - biobb_chemistry        # AcpypeParamsCNS (prep_ligand_topology.py) -- wraps acpype+antechamber
+      - biobb_chemistry        # AcpypeParamsCNS (prep_ligand_topology.py) -- wraps the `acpype` CLI, does
+                               # NOT vendor it
+      - acpype                 # the actual CLI AcpypeParamsCNS's binary_path property shells out to

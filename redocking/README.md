@@ -147,21 +147,51 @@ independently verified against the original.
 override) needs confirming against an actual run's output PDB before
 trusting any number this script produces.
 
-## What's verified vs. not (read before running Stage 5 onward)
+## What's verified vs. not
 
-Everything through Stage 4's CDD-residue lookup runs and is confirmed
-correct on this pipeline's real data (see each script's own testing before
-being wired in). HADDOCK3, `biobb_chemistry`/acpype, and OpenBabel are not
-installed anywhere in this environment yet -- Stages 1, and everything
-from Stage 5 onward, are written against HADDOCK3's documented interfaces
-(`haddock3-restraints` CLI, `[topoaa]`/`autotoppar`, `capri_ss.tsv`/
-`capri_clt.tsv` output format) but have not been executed. Treat the first
-real run of each as a validation pass, not a rerun of already-proven code
--- this mirrors `rescoring/`'s own experience porting PyRosetta parameter
-generation from a single-ligand pilot to this pipeline's full ligand set
-(see that project's README "Generalized from the sibling project" section
-for the flavor of issue to expect: naming/format mismatches between tools
-that both claim to speak "the same" format).
+**Env built and the entire pipeline mechanically validated end-to-end on
+the IFB cluster (2026-08-25)**, `envs/redocking.yaml` built there via
+`mamba env create` (plus `acpype` + `ambertools` added afterward -- see
+below), CNS binary confirmed executable with no recompile needed. A
+4-sample smoke test (`sampling=4`, not a real pilot run) completed the
+full `topoaa -> rigidbody -> caprieval -> seletop -> flexref -> caprieval
+-> ilrmsdmatrix -> clustrmsd -> seletopclusts -> caprieval` protocol with
+real, varying HADDOCK scores and cluster output. Stages 0/2/3/4 (GA1
+build, manifest, receptor extraction, restraints) and Stage 1 (BioExcel
+`AcpypeParamsCNS` ligand topology, validated against a standalone
+`[topoaa]` run) all ran for real against this pipeline's actual data, not
+just syntax-checked.
+
+**Two real bugs were found and fixed by actually running this** (not
+guessable from HADDOCK3's docs alone -- see
+`reference_haddock3_cns_ligand_param_propagation` in project memory for
+full detail if picking this up again):
+1. `haddock3-restraints passive_from_active`'s `active_list` argument is a
+   literal comma-separated string, not a file path; `active_passive_to_ambig`
+   needs one combined "actpass" file per molecule (active on line 1,
+   passive on line 2, exactly 2 lines) -- `define_active_passive.py` fixed.
+2. `ligand_top_fname`/`ligand_param_fname` set only under `[topoaa]` do
+   NOT propagate to `[rigidbody]`/`[flexref]` for the manual (non-
+   autotoppar) route -- each module needs its own copy of both lines, or
+   CNS aborts deep in energy minimization with no clear top-level error
+   (`%NBUPDA-ERR: missing nonbonded Lennard-Jones parameters`, only
+   visible by setting that module's own `debug = true` and reading the
+   decompressed `.out.gz`). `make_haddock_cfg.py` fixed.
+
+`envs/redocking.yaml` needed two additions found the same way: `acpype`
+(PyPI -- `biobb_chemistry` only wraps its CLI, doesn't vendor it) and
+`ambertools` (conda-forge -- acpype's AM1-BCC charge step needs
+antechamber/sqm on PATH, also not vendored).
+
+**Still not run**: the actual full-sampling (`sampling=200`) pilot docking
+for all 3 manifest complexes via SLURM (`run_haddock_batch.py`) --
+mechanically validated at small scale, but the real-scale numbers
+(HADDOCK score distributions, cluster convergence, and Stage 7's
+RMSD/pocket-contact comparison against ABCfold) haven't been produced
+yet. `compare_to_abcfold.py`'s `LIGAND_CHAIN_HADDOCK = "B"` assumption is
+now independently confirmed correct (matches `active_passive_to_ambig`'s
+default `--segid-two`), but the script itself hasn't been run against real
+output.
 
 ## Repo layout
 

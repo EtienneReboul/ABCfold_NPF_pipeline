@@ -43,23 +43,59 @@ from pathlib import Path
 import config
 
 
+LIGAND_CHAIN = "B"  # matches define_active_passive.py's SEGID_LIGAND and
+                     # compare_to_abcfold.py's LIGAND_CHAIN_HADDOCK -- receptor is molecule 1 (chain A),
+                     # ligand is molecule 2 (chain B), consistently across every stage.
+
+
+def _set_chain_id(pdb_path: Path, chain_id: str) -> None:
+    """obabel's plain PDB output leaves the chain-ID column (22) blank --
+    confirmed by hand: HADDOCK3's [topoaa] hard-requires a chain ID or
+    segID on every ATOM/HETATM line (`libpdb.identify_chainseg` raises
+    ValueError otherwise, caught the first time this was run against a
+    real HADDOCK3 install). Not a CNS-topology-naming issue -- the acpype/
+    AcpypeParamsCNS topology itself loaded fine; this is purely a PDB
+    formatting gap in the OTHER file [topoaa] needs (the ligand's own
+    coordinate PDB, `molecules=[...]`'s second entry in make_haddock_cfg.py)."""
+    lines = pdb_path.read_text().splitlines()
+    out = []
+    for line in lines:
+        if line.startswith(("ATOM", "HETATM")) and len(line) >= 22:
+            line = line[:21] + chain_id + line[22:]
+        out.append(line)
+    pdb_path.write_text("\n".join(out) + "\n")
+
+
 def standardize_with_openbabel(sdf_path: Path, out_pdb: Path) -> Path:
     """obabel: standardize + add explicit hydrogens, SDF -> PDB (acpype's
-    expected input format)."""
+    expected input format), then stamp a chain ID (see _set_chain_id)."""
     obabel = shutil.which("obabel")
     if obabel is None:
         raise RuntimeError("obabel not found on PATH -- activate the redocking conda env (envs/redocking.yaml).")
     subprocess.run([obabel, "-isdf", str(sdf_path), "-opdb", "-O", str(out_pdb), "-h"], check=True)
+    _set_chain_id(out_pdb, LIGAND_CHAIN)
     return out_pdb
 
 
-def run_acpype_cns(ligand_pdb: Path, out_dir: Path, net_charge: int = 0, charge_method: str = "bcc") -> tuple[Path, Path]:
+def run_acpype_cns(ligand_pdb: Path, out_dir: Path, net_charge: int = 0) -> tuple[Path, Path]:
     """biobb_chemistry's AcpypeParamsCNS building block: ligand PDB -> CNS
     topology (.top) + parameters (.par), AMBER/GAFF-derived AM1-BCC partial
     charges -- same antechamber/AM1-BCC charge machinery
     rescoring/src/sanitize_for_chimerax.py's ChimeraX dock-prep path
     already relies on for this codebase's ligands, so this isn't a new
-    external dependency conceptually, just a new conda env."""
+    external dependency conceptually, just a new conda env (which also
+    needs the separate `acpype` PyPI package + AmberTools' antechamber/sqm
+    on PATH -- biobb_chemistry only wraps the `acpype` CLI, it doesn't
+    vendor it or AmberTools; confirmed missing on a fresh
+    envs/redocking.yaml build, see that file's own comments).
+
+    Charge method is NOT exposed as a biobb property (AcpypeParamsCNS's
+    documented `properties` are only basename/charge/binary_path/workflow
+    keys -- confirmed by hand: passing an `atom_type` key raises a biobb
+    "not a recognized property" warning and is silently ignored) -- acpype
+    always runs its own default (bcc/AM1-BCC) when charge method isn't
+    otherwise specified on its CLI, which biobb's wrapper doesn't expose
+    a hook for."""
     from biobb_chemistry.acpype.acpype_params_cns import AcpypeParamsCNS
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -74,7 +110,7 @@ def run_acpype_cns(ligand_pdb: Path, out_dir: Path, net_charge: int = 0, charge_
         output_path_inp=str(out_inp),
         output_path_top=str(out_top),
         output_path_pdb=str(out_pdb),
-        properties={"basename": "GA1", "charge": net_charge, "atom_type": charge_method},
+        properties={"basename": "GA1", "charge": net_charge},
     ).launch()
 
     if not out_top.exists() or not out_par.exists():
