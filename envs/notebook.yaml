@@ -19,3 +19,8 @@ dependencies:
   - pip:
       - kaleido>=0.2       # static PNG export for plotly figures
       - anywidget>=0.9     # plotly>=6 needs this for go.FigureWidget (formerly ipywidgets-native)
+      - -e /Users/ereboul/projects/python-pliparser   # ga1_pocket_exploration.ipynb: parses raw PLIP
+                                                       # reports for atom-level interaction matrices
+                                                       # (rescoring/results/plip/*.txt) -- same local
+                                                       # editable install rescoring/README.md documents
+                                                       # for the pyrosetta_rescoring env
