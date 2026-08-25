@@ -1,140 +1,148 @@
 """
 redocking/src/make_manifest.py
 =================================
-Stage 2: this run's receptor complexes -- every NPF_LDA_kernel HC importer
-that has a GA1-holoform cluster-representative pose in this pipeline
-(positive controls) + every HC non-importer that has an apoform ABCfold
-structure (negative controls), filtered down to only those that ALSO have
-CDD pocket residues (config.has_cdd_residues -- see that function's
-docstring: a handful of proteins have a genuinely empty InterProScan
-result, confirmed by hand, not just a not-yet-run one).
+Stage 2: this run's receptor complexes -- one structure per (protein,
+macro-conformation ca_cluster) for every NPF_LDA_kernel HC importer/non-
+importer that has both CDD pocket residues and usable clustering output.
+Per-protein pca_k3 clustering typically yields 3 macro-conformations
+(ca_cluster 0/1/2) -- rather than picking a single "primary" cluster's
+pose (this pipeline's earlier, smaller pilot), every usable macro-
+conformation gets its own docking run, since different backbone
+conformations (e.g. inward- vs outward-facing transporter states) can
+have meaningfully different pocket accessibility -- confirmed by hand
+(2026-08-25) that all 24 candidate proteins have exactly 3 such clusters,
+giving 72 total complexes (5 importers x 3 + 19 non-importers x 3).
 
-Coverage is NOT 1:1 with NPF_LDA_kernel's full hc_importers/
-hc_non_importers lists -- confirmed by hand (2026-08-25) against this
-pipeline's actual data:
-  - Only 5 of 12 hc_importers have a GA1-holoform pose in THIS pipeline
-    (NPF3.1, NPF2.12, NPF2.13, NPF2.10, NPF2.5). The other 7 were either
-    co-folded with a different assigned ligand here instead (NPF2.7/
-    NPF2.3/NPF2.4/NPF1.1/NPF1.2 -> nitrate, NPF4.2 -> ABA -- see
-    scripts/ligand_assignment.py's HC_IMPORTERS/NITRATE_TRANSPORTERS/
-    ABA_TRANSPORTERS), or have a GA1 pose but no CDD residues (NPF4.1).
-    Getting a GA1 pose for the first 6 needs NEW ABCfold cofolding runs
-    (out of scope here); NPF4.1's CDD gap is a genuine empty InterProScan
-    result, not a pending one (see config.load_cdd_residues's docstring).
-  - 19 of 21 hc_non_importers are usable; NPF8.5 and NPF5.9 have the same
-    genuine-empty-CDD-result issue as NPF4.1.
+Receptor source: results/tm_reannotated/<protein>/pca_k3/assignments.parquet
++ .../cluster_<id>/<frame_id>.cif (worflows/postprocessing's own TM-
+alignment + PCA-k3 macro-state clustering, scripts/cluster_conformations.py
+-- pools apo AND holo frames on one shared coordinate frame). Used instead
+of raw results/abcfold/ or rescoring/data/manifest.csv (the previous,
+smaller-scale source) because a meaningful fraction of raw per-frame CIFs
+get deleted by this pipeline's own storage-compression step once run on
+the cluster (confirmed by hand: 16 of the original 24 manifest rows'
+raw CIFs were already gone on the IFB cluster, still present locally) --
+tm_reannotated's `symlinked == True` frames are a separately curated,
+stable subset that survives that compression, and cover both apo and holo
+frames identically, so importers and non-importers now share one
+selection code path instead of two.
 
-Importer side reuses rescoring/data/manifest.csv's already-computed
-cluster assignments (rescoring/src/make_manifest.py owns that clustering
-logic; this script only reads its output) -- deterministic pick: among a
-protein's rows for GA1-holoform, sort by (ca_cluster, ligand_pose_cluster,
-complex_id) and take the first.
+Per-(protein, ca_cluster) representative pick: among symlinked frames in
+that cluster, highest ptm (overall fold confidence -- the receptor's own
+quality, not iptm's ligand-placement confidence, which is irrelevant here
+since the ab initio ligand pose is discarded and redocked fresh), frame_id
+as a deterministic tiebreak.
 
 Output: data/manifest.csv (complex_id, protein, role [importer/
-non_importer], form [holo/apo], receptor_cif) + a coverage report printed
-to stdout (skipped proteins + why).
+non_importer], form [holo/apo], ca_cluster, receptor_cif) + a coverage
+report printed to stdout (skipped proteins + why).
 """
 from __future__ import annotations
 
 import csv
-from pathlib import Path
+import hashlib
+import sys
 
 import config
 
+# ligand_for() is the single source of truth for which ligand a protein's
+# "__holo" ABCfold run was actually co-folded with -- NOT necessarily GA1.
+# Confirmed by hand (2026-08-25): naively accepting any status=="holo"
+# tm_reannotated frame for an hc_importers-list protein silently pulled in
+# NPF2.7/NPF2.3/NPF2.4/NPF1.1/NPF1.2's NITRATE-bound holoform conformations
+# as if they were GA1 importers (they're in NITRATE_TRANSPORTERS, not
+# HC_IMPORTERS, in ligand_assignment.py) -- those receptor conformations
+# were never challenged with GA1 during ab initio prediction, and there's
+# no GA1 ABCfold pose to compare against for them anyway (the same reason
+# they were excluded from the original, smaller-scale manifest).
+sys.path.insert(0, str(config.PIPELINE_ROOT / "scripts"))
+from ligand_assignment import ligand_for  # noqa: E402
+
 
 def _full_protein_name(short_name: str) -> str | None:
-    """'NPF2.10' -> 'NPF2.10_Q944G5', by matching against whichever real
-    protein directories/manifest rows exist -- avoids hardcoding UniProt
-    accessions here. None if no match found anywhere."""
-    candidates = set()
-    if config.ABCFOLD_OUT_ROOT.exists():
-        for d in config.ABCFOLD_OUT_ROOT.iterdir():
-            name = d.name.rsplit("__", 1)[0]
-            if name.startswith(short_name + "_"):
-                candidates.add(name)
-    if config.RESCORING_MANIFEST_CSV.exists():
-        with config.RESCORING_MANIFEST_CSV.open() as f:
-            for row in csv.DictReader(f):
-                if row["protein"].startswith(short_name + "_"):
-                    candidates.add(row["protein"])
+    """'NPF2.10' -> 'NPF2.10_Q944G5', by matching against whichever
+    tm_reannotated protein directories exist -- avoids hardcoding UniProt
+    accessions here. None if no match found."""
+    if not config.TM_REANNOTATED_ROOT.exists():
+        return None
+    candidates = [d.name for d in config.TM_REANNOTATED_ROOT.iterdir() if d.name.startswith(short_name + "_")]
     if not candidates:
         return None
     if len(candidates) > 1:
         raise ValueError(f"{short_name!r} matched multiple full names: {sorted(candidates)}")
-    return candidates.pop()
+    return candidates[0]
 
 
-def _importer_cluster_rep(protein: str, ligand_key: str = config.LIGAND_KEY) -> tuple[str, str] | None:
-    """(complex_id, cif_path) for `protein`'s lowest (ca_cluster,
-    ligand_pose_cluster) `ligand_key`-holoform row in rescoring's own
-    manifest.csv -- None if this protein has no such row (never co-folded
-    with this ligand in this pipeline)."""
-    with config.RESCORING_MANIFEST_CSV.open() as f:
-        rows = [r for r in csv.DictReader(f) if r["protein"] == protein and r["ligand"] == ligand_key]
-    if not rows:
+def _cluster_representatives(protein: str, status: str) -> list[dict] | None:
+    """One row per usable ca_cluster for `protein`'s `status` ('apo' or
+    'holo') frames -- None if this protein has no clustering output at
+    all, empty list if it has output but nothing usable for this status."""
+    df = config.load_cluster_assignments(protein)
+    if df is None:
         return None
-    # ligand_pose_cluster is "" for rows whose ca_cluster never got a
-    # ligand-pose sub-clustering pass (too few poses, or a different
-    # macro-state) -- confirmed present in real data, not just a pilot
-    # edge case. Sort those last (inf) rather than crashing on int("").
-    rows.sort(key=lambda r: (int(r["ca_cluster"]),
-                              int(r["ligand_pose_cluster"]) if r["ligand_pose_cluster"] else float("inf"),
-                              r["complex_id"]))
-    best = rows[0]
-    return best["complex_id"], best["cif_path"]
+    sub = df[(df["status"] == status) & (df["symlinked"])]
+    if sub.empty:
+        return []
+
+    reps = []
+    for cluster_id, group in sub.groupby("cluster"):
+        best = group.sort_values(["ptm", "frame_id"], ascending=[False, True]).iloc[0]
+        reps.append({"cluster": int(cluster_id), "frame_id": best["frame_id"],
+                      "model": best["model"], "ptm": float(best["ptm"])})
+    return reps
+
+
+def _complex_id(protein: str, cluster: int, model: str, frame_id: str) -> str:
+    """Short and unique regardless of backend -- some backends' frame_id
+    (e.g. boltz) embeds the whole nested output directory structure and
+    is 200+ characters on its own (confirmed by hand on the earlier,
+    single-cluster-per-protein manifest); a short hash of the real
+    frame_id keeps this collision-free without the unwieldy length."""
+    short_hash = hashlib.md5(frame_id.encode()).hexdigest()[:8]
+    return f"{protein}__ca{cluster}_{model}_{short_hash}"
 
 
 def build_manifest() -> tuple[list[dict], list[str]]:
-    if not config.RESCORING_MANIFEST_CSV.exists():
-        raise FileNotFoundError(
-            f"{config.RESCORING_MANIFEST_CSV} not found -- run rescoring/src/make_manifest.py first "
-            f"(this reuses its cluster-representative selection, not its own copy of the logic)."
-        )
-
     manifest_rows: list[dict] = []
     skipped: list[str] = []
 
-    for short in config.load_importers():
-        full = _full_protein_name(short)
-        if full is None:
-            skipped.append(f"{short}: no protein directory/manifest entry found at all")
-            continue
-        rep = _importer_cluster_rep(full)
-        if rep is None:
-            skipped.append(f"{full}: no GA1-holoform pose in rescoring/data/manifest.csv "
-                            f"(co-folded with a different ligand in this pipeline, or never run)")
-            continue
-        if not config.has_cdd_residues(full):
-            skipped.append(f"{full}: no CDD pocket residues (see config.load_cdd_residues docstring)")
-            continue
-        complex_id, cif_path = rep
-        manifest_rows.append({
-            "complex_id": complex_id, "protein": full, "role": "importer",
-            "form": "holo", "receptor_cif": cif_path,
-        })
+    candidates = (
+        [(short, "importer", "holo") for short in config.load_importers()]
+        + [(short, "non_importer", "apo") for short in config.load_non_importers()]
+    )
 
-    for short in config.load_non_importers():
+    for short, role, status in candidates:
+        if role == "importer" and ligand_for(short) != config.LIGAND_KEY:
+            skipped.append(f"{short}: assigned ligand is {ligand_for(short)!r} in this pipeline, "
+                            f"not {config.LIGAND_KEY!r} -- its holoform conformation was never "
+                            f"challenged with GA1, and there's no GA1 ABCfold pose to compare against")
+            continue
         full = _full_protein_name(short)
         if full is None:
-            skipped.append(f"{short}: no protein directory/manifest entry found at all")
-            continue
-        apo_dir = config.receptor_holo_apo_dir(full, "apo")
-        if not apo_dir.exists():
-            skipped.append(f"{full}: no apoform ABCfold run ({apo_dir})")
+            skipped.append(f"{short}: no tm_reannotated clustering output found at all")
             continue
         if not config.has_cdd_residues(full):
             skipped.append(f"{full}: no CDD pocket residues (see config.load_cdd_residues docstring)")
             continue
-        cif_candidates = sorted(apo_dir.glob("*/seed-*/*_model.cif"))
-        if not cif_candidates:
-            skipped.append(f"{full}: apoform dir exists but no *_model.cif found under it")
+        reps = _cluster_representatives(full, status)
+        if reps is None:
+            skipped.append(f"{full}: no assignments.parquet found")
             continue
-        cif_path = cif_candidates[0]
-        manifest_rows.append({
-            "complex_id": f"{full}__apo_{cif_path.parent.name}", "protein": full,
-            "role": "non_importer", "form": "apo",
-            "receptor_cif": str(cif_path.relative_to(config.PIPELINE_ROOT)),
-        })
+        if not reps:
+            skipped.append(f"{full}: assignments.parquet exists but no symlinked {status!r} frames in it")
+            continue
+        for rep in reps:
+            cif_path = config.cluster_cif_path(full, rep["cluster"], rep["frame_id"])
+            if not cif_path.exists():
+                skipped.append(f"{full} ca_cluster={rep['cluster']}: {cif_path} listed as symlinked "
+                                f"but file not found on disk")
+                continue
+            complex_id = _complex_id(full, rep["cluster"], rep["model"], rep["frame_id"])
+            manifest_rows.append({
+                "complex_id": complex_id, "protein": full, "role": role, "form": status,
+                "ca_cluster": rep["cluster"],
+                "receptor_cif": str(cif_path.relative_to(config.PIPELINE_ROOT)),
+            })
 
     return manifest_rows, skipped
 
@@ -142,7 +150,7 @@ def build_manifest() -> tuple[list[dict], list[str]]:
 def main() -> None:
     rows, skipped = build_manifest()
     with config.MANIFEST_CSV.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["complex_id", "protein", "role", "form", "receptor_cif"])
+        writer = csv.DictWriter(f, fieldnames=["complex_id", "protein", "role", "form", "ca_cluster", "receptor_cif"])
         writer.writeheader()
         writer.writerows(rows)
 
@@ -151,7 +159,7 @@ def main() -> None:
     print(f"Wrote {len(rows)} rows to {config.MANIFEST_CSV} "
           f"({n_importer} importer, {n_non_importer} non_importer)")
     for r in rows:
-        print(f"  {r['role']:>13s}  {r['protein']:<16s}  {r['receptor_cif']}")
+        print(f"  {r['role']:>13s}  {r['protein']:<16s}  ca{r['ca_cluster']}  {r['receptor_cif']}")
 
     if skipped:
         print(f"\nSkipped {len(skipped)} candidate(s):")

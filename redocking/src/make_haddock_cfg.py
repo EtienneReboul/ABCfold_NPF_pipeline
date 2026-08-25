@@ -16,6 +16,25 @@ Two ligand-topology modes, selected with --autotoppar:
     acpype dependency. Fast cross-check / fallback if the acpype route
     isn't validated yet (see prep_ligand_topology.py's module docstring).
 
+**Confirmed by hand at production scale (2026-08-25)**: `[rigidbody]`/
+`[flexref]`'s per-module `tolerance` parameter (default 5%, max 99) --
+the max percentage of a step's CNS jobs allowed to produce no output
+before HADDOCK3 aborts the whole run -- needs raising well above its
+default on this cluster's shared filesystem. Hit a real run where
+`[flexref]` (40 jobs) reported "30.00% of output was not generated",
+but every one of the 40 expected `flexref_N.pdb` files was actually
+present, correctly sized, with a real HADDOCK score, and `io.json`
+itself recorded 40/40 -- `haddock.libs.libontology.ModuleIO.check_faulty()`
+checks `Path.exists()` immediately after the parallel engine reports all
+jobs finished, before the shared-storage filesystem had made every file's
+metadata visible yet (a stat-cache/NFS-propagation lag, not a real
+per-job failure) -- confirmed by re-inspecting the same files afterward
+and finding them all intact. Also note `check_faulty()` calls
+`remove_missing()` regardless of whether the tolerance check itself
+passes, so a raised tolerance lets the run continue with (rarely) a
+handful of models genuinely dropped, not silently duplicated or
+corrupted.
+
 **Confirmed by hand against a real run (2026-08-25) -- NOT guessable from
 the fetched upstream example alone**: `ligand_top_fname`/`ligand_param_fname`
 set only under `[topoaa]` are NOT automatically carried through to later
@@ -91,6 +110,7 @@ ncores = {ncores}
 {ligand_block}
 ambig_fname = "{ambig_tbl}"
 sampling = 200
+tolerance = {tolerance}
 
 [caprieval]
 reference_fname = "{receptor_pdb}"
@@ -101,6 +121,7 @@ select = 40
 [flexref]
 {ligand_block}
 ambig_fname = "{ambig_tbl}"
+tolerance = {tolerance}
 
 [caprieval]
 
@@ -128,10 +149,14 @@ autotoppar = true
 
 DEFAULT_NCORES = 32  # keep in sync with run_haddock_batch.py's DEFAULT_CPUS -- ncores has no way
                       # to auto-detect the SLURM --cpus-per-task a job runs under (see module docstring)
+DEFAULT_TOLERANCE = 50  # generous headroom over the observed ~30% transient filesystem-visibility
+                         # lag at production scale (see module docstring) -- still catches a truly
+                         # catastrophic (>50%) per-job failure rate, doesn't mask real breakage
 
 
 def make_cfg(complex_id: str, receptor_pdb: Path, ligand_pdb: Path, ambig_tbl: Path,
-             run_dir: Path, out_cfg: Path, autotoppar: bool, ncores: int = DEFAULT_NCORES) -> Path:
+             run_dir: Path, out_cfg: Path, autotoppar: bool, ncores: int = DEFAULT_NCORES,
+             tolerance: int = DEFAULT_TOLERANCE) -> Path:
     if autotoppar:
         topoaa_block = TOPOAA_AUTOTOPPAR_BLOCK
         ligand_block = ""  # autotoppar's own single-model propagation covers rigidbody/flexref already
@@ -153,6 +178,7 @@ def make_cfg(complex_id: str, receptor_pdb: Path, ligand_pdb: Path, ambig_tbl: P
         topoaa_ligand_block=topoaa_block,
         ligand_block=ligand_block,
         ncores=ncores,
+        tolerance=tolerance,
     )
     out_cfg.parent.mkdir(parents=True, exist_ok=True)
     out_cfg.write_text(cfg_text)
@@ -167,6 +193,10 @@ def main() -> None:
     parser.add_argument("--ncores", type=int, default=DEFAULT_NCORES,
                          help="HADDOCK3's own parallel-CNS-jobs count -- match whatever "
                               "--cpus you'll pass run_haddock_batch.py, they don't sync automatically.")
+    parser.add_argument("--tolerance", type=int, default=DEFAULT_TOLERANCE,
+                         help="Per-module failure tolerance percentage -- raised above HADDOCK3's "
+                              "5%% default to absorb this cluster's shared-filesystem visibility lag "
+                              "at production job counts (see module docstring).")
     args = parser.parse_args()
 
     if not config.GA1_FROM_GA3_SDF.exists():
@@ -191,7 +221,7 @@ def main() -> None:
         run_dir = config.HADDOCK_RUNS_DIR / complex_id
         out_cfg = cfgs_dir / f"{complex_id}.cfg"
         make_cfg(complex_id, receptor_pdb, ligand_pdb, ambig_tbl, run_dir, out_cfg,
-                 args.autotoppar, args.ncores)
+                 args.autotoppar, args.ncores, args.tolerance)
         print(f"{complex_id}: wrote {out_cfg}")
 
 

@@ -24,10 +24,18 @@ RESULTS_DIR = REDOCKING_ROOT / "results"
 HADDOCK_RUNS_DIR = RESULTS_DIR / "haddock_runs"
 COMPARISON_DIR = RESULTS_DIR / "comparison"
 
-# Pipeline outputs this project reads from (never writes to).
-ABCFOLD_OUT_ROOT = PIPELINE_ROOT / "results" / "abcfold"
-LIGPOSE_ROOT = PIPELINE_ROOT / "results" / "ligand_pose"
-RESCORING_MANIFEST_CSV = PIPELINE_ROOT / "rescoring" / "data" / "manifest.csv"
+# Pipeline output this project reads from (never writes to) -- the
+# macro-conformation ("ca_cluster") clustering + a curated, materialized
+# subset of representative CIFs per cluster, pooling BOTH apo and holo
+# frames on one shared coordinate frame (worflows/postprocessing's own
+# TM-alignment + PCA-k3 clustering stage, scripts/cluster_conformations.py).
+# Deliberately used instead of raw results/abcfold/ -- confirmed by hand
+# (2026-08-25) that a meaningful fraction of raw per-frame CIFs get
+# deleted by this pipeline's own storage-compression step once run on the
+# cluster (see submit_abcfold.sh's compress_abcfold_metadata.py step);
+# tm_reannotated's symlinked==True frames are a separately curated,
+# stable set that survives that compression.
+TM_REANNOTATED_ROOT = PIPELINE_ROOT / "results" / "tm_reannotated"
 
 MANIFEST_CSV = DATA_DIR / "manifest.csv"
 GA1_FROM_GA3_SDF = DATA_DIR / "ga1_from_ga3.sdf"
@@ -112,11 +120,21 @@ def load_cdd_residues(protein_name: str) -> list[int]:
     return sorted(summary[protein_name]["residues"])
 
 
-def receptor_holo_apo_dir(protein_name: str, form: str) -> Path:
-    """results/abcfold/<protein>__<form>/ -- form is 'holo' or 'apo'."""
-    if form not in ("holo", "apo"):
-        raise ValueError(f"form must be 'holo' or 'apo', got {form!r}")
-    return ABCFOLD_OUT_ROOT / f"{protein_name}__{form}"
+def load_cluster_assignments(protein_name: str):
+    """tm_reannotated/<protein>/pca_k3/assignments.parquet -- one row per
+    ABCfold frame (apo AND holo pooled), columns include status/model/
+    seed/sample_index/frame_id/ptm/iptm/cluster/symlinked. Returns a
+    pandas DataFrame; None if this protein has no clustering output at
+    all (see make_manifest.py's coverage filtering)."""
+    import pandas as pd
+    path = TM_REANNOTATED_ROOT / protein_name / "pca_k3" / "assignments.parquet"
+    if not path.exists():
+        return None
+    return pd.read_parquet(path)
+
+
+def cluster_cif_path(protein_name: str, cluster: int, frame_id: str) -> Path:
+    return TM_REANNOTATED_ROOT / protein_name / "pca_k3" / f"cluster_{cluster}" / f"{frame_id}.cif"
 
 
 for _d in (DATA_DIR, LIGAND_TOPOLOGY_DIR, HADDOCK_RUNS_DIR, COMPARISON_DIR):

@@ -24,6 +24,7 @@ dependencies:
   - openbabel>=3.1           # prep_ligand_topology.py's ligand standardization step
   - numpy>=1.26,<2.0
   - pandas>=2.0
+  - pyarrow>=15.0          # reads tm_reannotated/*/pca_k3/assignments.parquet (make_manifest.py)
   - pyyaml>=6.0
   - gcc                      # CNS recompile fallback, if the pip-bundled binary doesn't run here
   - gfortran
