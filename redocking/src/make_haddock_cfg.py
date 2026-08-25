@@ -38,6 +38,18 @@ in its own `defaults.yaml`, defaulting to empty string). Not needed for
 `--autotoppar`, since that branch's own propagation already covers it for
 this pilot's single-model (non-ensemble) case.
 
+**Confirmed by hand (2026-08-25)**: HADDOCK3's `ncores` (how many CNS jobs
+run in parallel within a module) is a GLOBAL cfg parameter
+(`haddock/modules/defaults.yaml`, not any one module's own defaults.yaml)
+that **defaults to 4** and is completely independent of the SLURM
+`--cpus-per-task` a job was submitted with -- HADDOCK3 does not read the
+SLURM allocation. Leaving it unset meant the pilot's first successful run
+processed rigidbody's 200 CNS jobs 4-at-a-time despite a 32-core SLURM
+request (`Selected 4 cores to process 200 jobs, with 64 maximum available
+cores` in its own log) -- confirmed by hand, not a guess. Set explicitly
+at the top level of the cfg (outside any `[module]` section, like
+`run_dir`/`molecules`) so it applies to every module.
+
 **Confirmed by hand (2026-08-25)**: the generated `.cfg` must NOT live
 inside `run_dir` itself. HADDOCK3 refuses to write into a `run_dir` that
 already exists and is non-empty (`--restart` required otherwise) -- a run
@@ -70,6 +82,7 @@ CFG_TEMPLATE = """\
 # examples/docking-protein-ligand/docking-protein-ligand-full.cfg
 run_dir = "{run_dir}"
 molecules = ["{receptor_pdb}", "{ligand_pdb}"]
+ncores = {ncores}
 
 [topoaa]
 {topoaa_ligand_block}
@@ -113,8 +126,12 @@ autotoppar = true
 """
 
 
+DEFAULT_NCORES = 32  # keep in sync with run_haddock_batch.py's DEFAULT_CPUS -- ncores has no way
+                      # to auto-detect the SLURM --cpus-per-task a job runs under (see module docstring)
+
+
 def make_cfg(complex_id: str, receptor_pdb: Path, ligand_pdb: Path, ambig_tbl: Path,
-             run_dir: Path, out_cfg: Path, autotoppar: bool) -> Path:
+             run_dir: Path, out_cfg: Path, autotoppar: bool, ncores: int = DEFAULT_NCORES) -> Path:
     if autotoppar:
         topoaa_block = TOPOAA_AUTOTOPPAR_BLOCK
         ligand_block = ""  # autotoppar's own single-model propagation covers rigidbody/flexref already
@@ -135,6 +152,7 @@ def make_cfg(complex_id: str, receptor_pdb: Path, ligand_pdb: Path, ambig_tbl: P
         ambig_tbl=ambig_tbl,
         topoaa_ligand_block=topoaa_block,
         ligand_block=ligand_block,
+        ncores=ncores,
     )
     out_cfg.parent.mkdir(parents=True, exist_ok=True)
     out_cfg.write_text(cfg_text)
@@ -146,6 +164,9 @@ def main() -> None:
     parser.add_argument("--autotoppar", action="store_true",
                          help="Use HADDOCK3's built-in autotoppar ligand-topology generation "
                               "instead of prep_ligand_topology.py's acpype/BioExcel output.")
+    parser.add_argument("--ncores", type=int, default=DEFAULT_NCORES,
+                         help="HADDOCK3's own parallel-CNS-jobs count -- match whatever "
+                              "--cpus you'll pass run_haddock_batch.py, they don't sync automatically.")
     args = parser.parse_args()
 
     if not config.GA1_FROM_GA3_SDF.exists():
@@ -169,7 +190,8 @@ def main() -> None:
         ambig_tbl = RESTRAINTS_DIR / f"{complex_id}_ambig.tbl"
         run_dir = config.HADDOCK_RUNS_DIR / complex_id
         out_cfg = cfgs_dir / f"{complex_id}.cfg"
-        make_cfg(complex_id, receptor_pdb, ligand_pdb, ambig_tbl, run_dir, out_cfg, args.autotoppar)
+        make_cfg(complex_id, receptor_pdb, ligand_pdb, ambig_tbl, run_dir, out_cfg,
+                 args.autotoppar, args.ncores)
         print(f"{complex_id}: wrote {out_cfg}")
 
 
