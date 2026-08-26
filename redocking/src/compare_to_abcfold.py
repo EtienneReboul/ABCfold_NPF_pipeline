@@ -45,6 +45,8 @@ import csv
 import json
 from pathlib import Path
 
+import json
+
 import gemmi
 import numpy as np
 
@@ -146,7 +148,28 @@ def _ligand_heavy_coords(structure: gemmi.Structure, chain_id: str) -> np.ndarra
     return np.array(coords)
 
 
-def compare_importer(complex_id: str, haddock_model_pdb: Path, abcfold_cif: Path) -> dict:
+def _abcfold_ligand_chain(protein: str) -> str:
+    """ABCfold's own ligand chain id for one protein's __holo run, read from
+    its resolved fold-input JSON -- NOT always "L" (found by hand running
+    this for real: NPF3.1_Q9SX20's protenix cluster-rep CIF uses chain "B"
+    for GA1, not "L"). One resolved.json covers every backend's frames for
+    a given protein's __holo run (the shared, already-resolved input spec
+    ABCfold itself wrote before fanning out to backends), so this is safe
+    to resolve once per protein rather than per-frame. Same lookup
+    rescoring/src/pose_prep.py's resolved_ligand_chain() already does for
+    the sibling PyRosetta pipeline -- duplicated here (not imported) since
+    redocking/src/config.py and rescoring/src/config.py are two different
+    modules both literally named `config` (see rescore_redocked_batch.py's
+    module docstring for why cross-importing between the two is unsafe)."""
+    path = config.PIPELINE_ROOT / "results" / "abcfold" / f"{protein}__holo" / "abc_fold_input.resolved.json"
+    data = json.loads(path.read_text())
+    for seq in data["sequences"]:
+        if "ligand" in seq:
+            return seq["ligand"]["id"][0]
+    raise ValueError(f"{path} has no 'ligand' entry in its sequences list")
+
+
+def compare_importer(complex_id: str, haddock_model_pdb: Path, abcfold_cif: Path, protein: str) -> dict:
     haddock_st = gemmi.read_structure(str(haddock_model_pdb))
     haddock_st.setup_entities()
     abcfold_st = gemmi.read_structure(str(abcfold_cif))
@@ -165,7 +188,8 @@ def compare_importer(complex_id: str, haddock_model_pdb: Path, abcfold_cif: Path
     receptor_rmsd = float(np.sqrt(np.mean(np.sum((mobile @ r + t - target) ** 2, axis=1))))
 
     haddock_ligand = _ligand_heavy_coords(haddock_st, LIGAND_CHAIN_HADDOCK)
-    abcfold_ligand = _ligand_heavy_coords(abcfold_st, "L")  # see rescoring/src/config.py's LIGAND_CHAIN
+    abcfold_ligand_chain = _abcfold_ligand_chain(protein)
+    abcfold_ligand = _ligand_heavy_coords(abcfold_st, abcfold_ligand_chain)
     haddock_ligand_superposed = haddock_ligand @ r + t
     if len(haddock_ligand) != len(abcfold_ligand):
         raise ValueError(f"{complex_id}: ligand heavy-atom count mismatch, HADDOCK3={len(haddock_ligand)} "
@@ -227,7 +251,7 @@ def main() -> None:
         if row["role"] == "importer":
             model_path, _ = top_ranked_model(run_dir)
             abcfold_cif = config.PIPELINE_ROOT / row["receptor_cif"]
-            result = compare_importer(complex_id, model_path, abcfold_cif)
+            result = compare_importer(complex_id, model_path, abcfold_cif, row["protein"])
             summary_rows.append({"complex_id": complex_id, "role": "importer",
                                   "ligand_rmsd_vs_abcfold_pose": result["ligand_rmsd_vs_abcfold_pose"]})
         else:
