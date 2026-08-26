@@ -72,9 +72,20 @@ def _read_capri_ss(caprieval_dir: Path) -> list[dict]:
 
 
 def _model_path(caprieval_dir: Path, row: dict) -> Path:
+    """capri_ss.tsv's own `model` column always names the plain `.pdb` --
+    but HADDOCK3 gzips every kept model in place after writing capri_ss.tsv
+    (confirmed on real completed output: `4_flexref/flexref_23.pdb.gz`
+    exists, `flexref_23.pdb` does not). gemmi reads `.gz` transparently
+    (confirmed by hand), so just point at the compressed file when the
+    plain one is missing -- no decompression needed for anything downstream
+    that reads this path via gemmi."""
     model_path = Path(row["model"])
     if not model_path.is_absolute():
         model_path = caprieval_dir / model_path
+    if not model_path.exists():
+        gz_path = model_path.with_suffix(model_path.suffix + ".gz")
+        if gz_path.exists():
+            return gz_path
     return model_path
 
 

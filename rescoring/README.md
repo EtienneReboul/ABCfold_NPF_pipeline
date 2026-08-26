@@ -165,6 +165,63 @@ MM-relax step below. Not pursued further — PyRosetta rescoring (stages
 9-13) still scores this ligand fine; only the ChimeraX/PLIP comparison
 path is affected.
 
+## Scoring `redocking/`'s HADDOCK3-redocked poses (no minimization)
+
+A third question, orthogonal to stages 9-16 above (which only ever score
+ABCfold's own ab initio poses): does `../redocking/`'s physics-based
+HADDOCK3 redocking of GA1 agree with the CDD/InterPro putative binding site
+*better* than ab initio cofolding did, and does it distinguish importers
+from non-importers the way NPF_LDA_kernel's sequence classifier does?
+
+```bash
+cd src
+python rescore_redocked_batch.py       # -> ../../redocking/results/rescoring/per_complex/<id>.csv
+python rescore_redocked_aggregate.py   # -> ../../redocking/results/rescoring/{all_contacts,cdd_agreement,lda_unfavorable_contacts}.csv
+```
+
+- `rescore_redocked_batch.py` scores each redocked complex's top-HADDOCK-
+  score model directly with PyRosetta (`decompose.py`'s per-residue
+  ligand<->protein energy graph) -- **no `relief.py` FastRelax step**. Per
+  the user (2026-08-26): HADDOCK3's own `[flexref]` already did a
+  physically-motivated semi-flexible refinement (CNS minimization); a
+  second, inconsistent Rosetta-side relax on top of a different force
+  field's refinement isn't the "clash relief on a never-minimized pose"
+  problem `relief.py` exists for (see "Raw (non-preminimized) poses"
+  above) -- score the HADDOCK3 pose exactly as HADDOCK3 produced it.
+  Reuses `pose_prep.py`/`ligand_fix.py`/`decompose.py` completely
+  unchanged (HADDOCK3's ligand chain "B" is built from the same GA1 SMILES
+  atom order every ABCfold backend already validates against). Resumable.
+  Deliberately self-contained in this project's own `src/` (never imports
+  `redocking/src/config.py` or its sibling modules -- both projects have
+  their own module literally named `config`, and Python's import cache is
+  keyed by name, so a cross-import would silently shadow one with the
+  other for every later bare `import config` in either package). **Found
+  by hand while wiring this up**: HADDOCK3 gzips every kept model in place
+  after writing `capri_ss.tsv` (e.g. `flexref_23.pdb.gz`, not
+  `flexref_23.pdb` -- the plain path `capri_ss.tsv`'s own `model` column
+  names doesn't exist on disk). gemmi reads `.gz` transparently, confirmed
+  by hand, so both this script and `redocking/src/compare_to_abcfold.py`
+  just fall back to the `.gz` sibling when the plain path is missing --
+  no decompression step needed anywhere downstream.
+- `rescore_redocked_aggregate.py` computes the same precision/recall CDD-
+  agreement framework `plip_analysis.py` already uses for PLIP-vs-ab-
+  initio (`n_in_cdd_pocket`/`n_unique_contacted_residues` = precision,
+  `n_cdd_positions_contacted`/`n_cdd_positions_total` = recall), but on
+  Rosetta's own energy-graph contacts and on the redocked poses --
+  separately per role (`importer`/`non_importer`, mirroring
+  NPF_LDA_kernel's own framing) and, for the 5 importer proteins that also
+  have a real ABCfold GA1-holoform pose, against a freshly-recomputed
+  same-method ("Rosetta contacts", not PLIP) ab-initio baseline pulled
+  from this project's own `results/all_contacts.csv` -- a fair before/
+  after number, printed alongside the existing PLIP-based ~50% figure
+  (`plip_cdd_agreement.csv`'s GA1 rows: pooled recall 0.480, precision
+  0.348) for reference. Also writes `lda_unfavorable_contacts.csv`: for
+  every CDD position actually contacted in a redocked pose, its mean
+  Rosetta two-body energy next to NPF_LDA_kernel's sequence-importance for
+  that position -- flags positions the classifier thinks matter but that
+  GA1's own physically-docked pose actually clashes with (positive/
+  unfavorable REU), not just contacts favorably.
+
 ## Trying a single complex by hand
 
 The single-complex driver these production stages were scaled up from —
@@ -395,6 +452,8 @@ rescoring/
     plip_run_batch.py                            PLIP path: batched docker driver, stage 15 (see above)
     plip_analysis.py                              PLIP path: CDD agreement + LDA overlay, stage 16 (see above)
     run_chimerax_try.py                            ChimeraX path: single-complex driver (see above)
+    rescore_redocked_batch.py                        redocking/ path: score HADDOCK3 poses, no relax (see above)
+    rescore_redocked_aggregate.py                     redocking/ path: CDD agreement + LDA-unfavorable report (see above)
   results/
     staged_poses/                per-complex corrected PDB fed to PyRosetta (deleted right after
                                   scoring -- pure scratch, regenerable from cif_path any time)
