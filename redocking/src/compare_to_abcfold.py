@@ -13,23 +13,28 @@ Stage 7: the actual question this whole pipeline exists to answer.
 - **Non-importer complexes**: there is no ABCfold ligand pose to compare
   against (apoform). The question instead is whether HADDOCK3 found ANY
   stable pose engaging the CDD-annotated pocket at all -- computed as
-  ligand-heavy-atom-to-CDD-active-residue contacts (<= 4.5 A) for each
-  ranked cluster representative. Low/no pocket engagement across clusters
-  is consistent with (not proof of) the non-importer classification;
-  strong engagement would be the more surprising, worth-investigating
-  result.
+  ligand-heavy-atom-to-CDD-active-residue contacts (<= 4.5 A) for each of
+  the top-N models by HADDOCK score. Low/no pocket engagement across the
+  top models is consistent with (not proof of) the non-importer
+  classification; strong engagement would be the more surprising,
+  worth-investigating result.
 
-Reads HADDOCK3's own `capri_ss.tsv`/`capri_clt.tsv` from the run's last
-`*_caprieval/` step directory (bonvinlab docs: capri_ss.tsv is per-model,
-ranked by HADDOCK score, with a cluster_id + cluster_ranking column once
-clustering has run upstream; capri_clt.tsv is the per-cluster aggregate).
+Reads HADDOCK3's own `capri_ss.tsv` from the run's last `*_caprieval/`
+step directory (per-model, ranked by HADDOCK score). **No cluster_id/
+cluster_ranking columns** -- make_haddock_cfg.py's protocol deliberately
+drops the ilrmsdmatrix/clustrmsd/seletopclusts clustering tail (see its
+module docstring: `fast-rmsdmatrix`, bundled with this HADDOCK3 install,
+needs a newer glibc than any compute node on this cluster has). Per the
+user (2026-08-25): RMSD/clustering can be computed post-hoc from the kept
+model PDBs if ever needed, so this script just ranks by score directly --
+"top-N models" here means literally that, not deduplicated cluster
+representatives, so a few near-identical poses can appear together.
 
-**Not yet run against a real HADDOCK3 output directory** -- the ligand
-chain-id assumption below (molecule 2 in `molecules=[receptor, ligand]` ->
-chain "B", no explicit segid override in make_haddock_cfg.py's template)
-needs confirming against an actual run before trusting this script's
-numbers; fix `LIGAND_CHAIN_HADDOCK` below if HADDOCK3 assigns something
-else.
+**Confirmed by hand against real HADDOCK3 output (2026-08-25)**: the
+ligand chain-id assumption below (molecule 2 in `molecules=[receptor,
+ligand]` -> chain "B") is correct -- a real run's own log records
+`Overall interface residues: {'A': array([...]), 'B': array([1])}`,
+matching `active_passive_to_ambig`'s default `--segid-two`.
 
 Output: results/comparison/<complex_id>_comparison.json + a combined
 results/comparison/summary.csv.
@@ -45,8 +50,11 @@ import numpy as np
 
 import config
 
-LIGAND_CHAIN_HADDOCK = "B"  # UNVERIFIED -- see module docstring
+LIGAND_CHAIN_HADDOCK = "B"  # confirmed correct -- see module docstring
 POCKET_CONTACT_CUTOFF = 4.5  # Angstrom, ligand heavy atom <-> CDD active-residue heavy atom
+TOP_N_NON_IMPORTER = 4  # models to check per non-importer complex, ranked by HADDOCK score
+                         # (matches the old top_models=4 the dropped seletopclusts step used --
+                         # no clustering now, so these can include near-identical poses)
 
 
 def _find_final_caprieval_dir(run_dir: Path) -> Path:
@@ -63,31 +71,29 @@ def _read_capri_ss(caprieval_dir: Path) -> list[dict]:
         return list(csv.DictReader(f, delimiter="\t"))
 
 
+def _model_path(caprieval_dir: Path, row: dict) -> Path:
+    model_path = Path(row["model"])
+    if not model_path.is_absolute():
+        model_path = caprieval_dir / model_path
+    return model_path
+
+
 def top_ranked_model(run_dir: Path) -> tuple[Path, dict]:
-    """Best-HADDOCK-score model (cluster rank 1, in-cluster rank 1) from
-    the run's final caprieval step."""
+    """Best-HADDOCK-score model from the run's final caprieval step."""
     caprieval_dir = _find_final_caprieval_dir(run_dir)
     rows = _read_capri_ss(caprieval_dir)
     if not rows:
         raise ValueError(f"{caprieval_dir / 'capri_ss.tsv'} is empty")
     best = min(rows, key=lambda r: float(r["score"]))
-    model_path = Path(rows[0].get("model", ""))
-    if not model_path.is_absolute():
-        model_path = caprieval_dir / model_path
-    return model_path, best
+    return _model_path(caprieval_dir, best), best
 
 
-def all_cluster_representatives(run_dir: Path) -> list[tuple[Path, dict]]:
+def top_n_models(run_dir: Path, n: int) -> list[tuple[Path, dict]]:
+    """Top-`n` models by HADDOCK score from the run's final caprieval
+    step -- no clustering/deduplication, see module docstring."""
     caprieval_dir = _find_final_caprieval_dir(run_dir)
-    rows = _read_capri_ss(caprieval_dir)
-    reps = [r for r in rows if r.get("cluster-ranking", r.get("cluster_ranking", "")) in ("1", 1)]
-    out = []
-    for r in reps:
-        model_path = Path(r["model"])
-        if not model_path.is_absolute():
-            model_path = caprieval_dir / model_path
-        out.append((model_path, r))
-    return out
+    rows = sorted(_read_capri_ss(caprieval_dir), key=lambda r: float(r["score"]))
+    return [(_model_path(caprieval_dir, r), r) for r in rows[:n]]
 
 
 def _chain_ca_coords(structure: gemmi.Structure, chain_id: str) -> dict[int, np.ndarray]:
@@ -165,9 +171,9 @@ def compare_importer(complex_id: str, haddock_model_pdb: Path, abcfold_cif: Path
 
 def compare_non_importer(complex_id: str, protein: str, run_dir: Path) -> dict:
     active_residues = set(config.load_cdd_residues(protein))
-    reps = all_cluster_representatives(run_dir)
-    cluster_results = []
-    for model_path, row in reps:
+    top_models = top_n_models(run_dir, TOP_N_NON_IMPORTER)
+    model_results = []
+    for rank, (model_path, row) in enumerate(top_models, start=1):
         st = gemmi.read_structure(str(model_path))
         st.setup_entities()
         ligand_coords = _ligand_heavy_coords(st, LIGAND_CHAIN_HADDOCK)
@@ -187,14 +193,14 @@ def compare_non_importer(complex_id: str, protein: str, run_dir: Path) -> dict:
                         if np.any(np.linalg.norm(ligand_coords - p, axis=1) <= POCKET_CONTACT_CUTOFF):
                             contacted_active.add(res.seqid.num)
             break
-        cluster_results.append({
-            "cluster_id": row.get("cluster-id", row.get("cluster_id")),
+        model_results.append({
+            "rank": rank,
             "haddock_score": float(row["score"]),
             "n_active_residues_contacted": len(contacted_active),
             "n_active_residues_total": len(active_residues),
         })
 
-    return {"complex_id": complex_id, "role": "non_importer", "clusters": cluster_results}
+    return {"complex_id": complex_id, "role": "non_importer", "top_models": model_results}
 
 
 def main() -> None:
@@ -215,9 +221,9 @@ def main() -> None:
                                   "ligand_rmsd_vs_abcfold_pose": result["ligand_rmsd_vs_abcfold_pose"]})
         else:
             result = compare_non_importer(complex_id, row["protein"], run_dir)
-            best_cluster = min(result["clusters"], key=lambda c: c["haddock_score"]) if result["clusters"] else {}
+            best = result["top_models"][0] if result["top_models"] else {}  # rank 1 == best score
             summary_rows.append({"complex_id": complex_id, "role": "non_importer",
-                                  "best_cluster_pocket_contacts": best_cluster.get("n_active_residues_contacted", "")})
+                                  "best_model_pocket_contacts": best.get("n_active_residues_contacted", "")})
 
         config.COMPARISON_DIR.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(result, indent=2))
