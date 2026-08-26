@@ -37,14 +37,25 @@ pose_prep.prepare_complex_pdb at a HADDOCK3 model.pdb instead of an ABCfold
 CIF (gemmi reads PDB/mmCIF/gzipped-either alike, confirmed by hand on a
 real flexref_*.pdb.gz).
 
-Output: redocking/results/rescoring/per_complex/<complex_id>.csv, same
-column shape as rescoring/results/per_complex/*.csv (this project's own
-ab-initio-pose scoring) plus `role`/`ca_cluster`/`form` from redocking's
-manifest, so aggregate scripts can pool both without reshaping. Resumable
--- skips any complex_id that already has an output CSV.
+Output: redocking/results/rescoring/per_complex/<complex_id>.csv (or
+`--out-dir`), same column shape as rescoring/results/per_complex/*.csv
+(this project's own ab-initio-pose scoring) plus `role`/`ca_cluster`/`form`
+from redocking's manifest, so aggregate scripts can pool both without
+reshaping. Resumable -- skips any complex_id that already has an output
+CSV in that `--out-dir`.
+
+`--representative-csv path/to/good_pose_representative.csv` (Stage 8's
+own output, see pose_pocket_engagement.py) re-scores using that complex's
+good-pose-filtered pick instead of the plain top-HADDOCK-score one, for
+complexes it lists -- combine with a fresh `--out-dir` to keep the
+before/after comparison as two separate result sets rather than
+overwriting the original. Found by hand (2026-08-26): only 2/72 complexes
+actually pick a different model this way (both non_importer, both with
+just 1-2 "good" poses out of 40 kept) -- everything else already agreed.
 
 Usage:
-    python rescore_redocked_batch.py [--limit N]
+    python rescore_redocked_batch.py [--limit N] [--out-dir DIR]
+        [--representative-csv path/to/good_pose_representative.csv]
 """
 from __future__ import annotations
 
@@ -70,13 +81,23 @@ REDOCKING_ROOT = config.PIPELINE_ROOT / "redocking"
 REDOCKING_MANIFEST_CSV = REDOCKING_ROOT / "data" / "manifest.csv"
 REDOCKING_HADDOCK_RUNS_DIR = REDOCKING_ROOT / "results" / "haddock_runs"
 
-OUT_DIR = REDOCKING_ROOT / "results" / "rescoring" / "per_complex"
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_OUT_DIR = REDOCKING_ROOT / "results" / "rescoring" / "per_complex"
 
 
 def _find_final_caprieval_dir(run_dir: Path) -> Path | None:
     candidates = sorted(run_dir.glob("*_caprieval"), key=lambda p: int(p.name.split("_")[0]))
     return candidates[-1] if candidates else None
+
+
+def _resolve_model_path(caprieval_dir: Path, row: dict) -> Path:
+    model_path = Path(row["model"])
+    if not model_path.is_absolute():
+        model_path = caprieval_dir / model_path
+    if not model_path.exists():
+        gz_path = model_path.with_suffix(model_path.suffix + ".gz")
+        if gz_path.exists():
+            model_path = gz_path
+    return model_path
 
 
 def top_ranked_model_path(run_dir: Path) -> tuple[Path, dict] | None:
@@ -94,14 +115,26 @@ def top_ranked_model_path(run_dir: Path) -> tuple[Path, dict] | None:
     if not rows:
         return None
     best = min(rows, key=lambda r: float(r["score"]))
-    model_path = Path(best["model"])
-    if not model_path.is_absolute():
-        model_path = caprieval_dir / model_path
-    if not model_path.exists():
-        gz_path = model_path.with_suffix(model_path.suffix + ".gz")
-        if gz_path.exists():
-            model_path = gz_path
-    return model_path, best
+    return _resolve_model_path(caprieval_dir, best), best
+
+
+def model_path_for_rank(run_dir: Path, rank: int) -> tuple[Path, dict] | None:
+    """Same as top_ranked_model_path, but for a SPECIFIC caprieval_rank --
+    used to reproduce pose_pocket_engagement.py's good_pose_representative.csv
+    pick (the best-scoring GOOD/pocket-engaging pose, which is occasionally
+    NOT rank 1 -- see that script's module docstring)."""
+    caprieval_dir = _find_final_caprieval_dir(run_dir)
+    if caprieval_dir is None:
+        return None
+    tsv_path = caprieval_dir / "capri_ss.tsv"
+    if not tsv_path.exists():
+        return None
+    with tsv_path.open() as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    match = next((r for r in rows if int(r["caprieval_rank"]) == rank), None)
+    if match is None:
+        return None
+    return _resolve_model_path(caprieval_dir, match), match
 
 
 def score_one(complex_id: str, model_path: Path, capri_row: dict, manifest_row: dict) -> pd.DataFrame:
@@ -138,7 +171,16 @@ def score_one(complex_id: str, model_path: Path, capri_row: dict, manifest_row: 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None, help="only process the first N manifest rows (smoke-testing)")
+    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
+                     help="where to write per-complex CSVs (default: results/rescoring/per_complex)")
+    ap.add_argument("--representative-csv", type=Path, default=None,
+                     help="pose_pocket_engagement.py's good_pose_representative.csv -- if given, use "
+                          "that complex's own good-pose-filtered caprieval_rank instead of the plain "
+                          "top-HADDOCK-score pick (rank 1), for complexes it covers")
     args = ap.parse_args()
+
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if not REDOCKING_MANIFEST_CSV.exists():
         sys.exit(f"{REDOCKING_MANIFEST_CSV} not found -- run redocking/src/make_manifest.py first.")
@@ -147,18 +189,26 @@ def main() -> None:
     if args.limit:
         rows = rows[: args.limit]
 
+    rep_rank = {}
+    if args.representative_csv:
+        with args.representative_csv.open() as f:
+            rep_rank = {r["complex_id"]: int(r["caprieval_rank"]) for r in csv.DictReader(f)}
+
     pyrosetta.init(f"-extra_res_fa {config.params_path(LIGAND_KEY)} -mute all")
 
     n_scored, n_skipped_done, n_skipped_no_output, n_failed = 0, 0, 0, 0
     for row in rows:
         complex_id = row["complex_id"]
-        out_path = OUT_DIR / f"{complex_id}.csv"
+        out_path = out_dir / f"{complex_id}.csv"
         if out_path.exists():
             n_skipped_done += 1
             continue
 
         run_dir = REDOCKING_HADDOCK_RUNS_DIR / complex_id
-        found = top_ranked_model_path(run_dir)
+        if complex_id in rep_rank:
+            found = model_path_for_rank(run_dir, rep_rank[complex_id])
+        else:
+            found = top_ranked_model_path(run_dir)
         if found is None:
             print(f"[rescore_redocked] {complex_id}: no completed caprieval output yet -- skipping")
             n_skipped_no_output += 1

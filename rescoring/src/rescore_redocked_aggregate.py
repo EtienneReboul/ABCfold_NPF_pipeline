@@ -52,15 +52,17 @@ Output (all under redocking/results/rescoring/):
 """
 from __future__ import annotations
 
+import argparse
 import sys
+from pathlib import Path
 
 import pandas as pd
 
 import config
 
 REDOCKING_ROOT = config.PIPELINE_ROOT / "redocking"
-PER_COMPLEX_DIR = REDOCKING_ROOT / "results" / "rescoring" / "per_complex"
-OUT_DIR = REDOCKING_ROOT / "results" / "rescoring"
+DEFAULT_PER_COMPLEX_DIR = REDOCKING_ROOT / "results" / "rescoring" / "per_complex"
+DEFAULT_OUT_DIR = REDOCKING_ROOT / "results" / "rescoring"
 
 # The 5 GA1-importer proteins that have BOTH a redocked complex here AND a
 # real ABCfold GA1-holoform pose already scored in rescoring/results/ --
@@ -72,14 +74,14 @@ AB_INITIO_GA1_PROTEINS = [
 ]
 
 
-def load_all_contacts() -> pd.DataFrame:
+def load_all_contacts(per_complex_dir: Path) -> pd.DataFrame:
     frames = []
-    for csv_path in sorted(PER_COMPLEX_DIR.glob("*.csv")):
+    for csv_path in sorted(per_complex_dir.glob("*.csv")):
         df = pd.read_csv(csv_path)
         if not df.empty:
             frames.append(df)
     if not frames:
-        sys.exit(f"No per-complex results found in {PER_COMPLEX_DIR} -- run rescore_redocked_batch.py first.")
+        sys.exit(f"No per-complex results found in {per_complex_dir} -- run rescore_redocked_batch.py first.")
     return pd.concat(frames, ignore_index=True)
 
 
@@ -186,16 +188,26 @@ def ab_initio_rosetta_baseline() -> pd.DataFrame | None:
 
 
 def main() -> None:
-    contacts = load_all_contacts()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--per-complex-dir", type=Path, default=DEFAULT_PER_COMPLEX_DIR,
+                     help="rescore_redocked_batch.py's --out-dir (default: results/rescoring/per_complex)")
+    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
+                     help="where to write all_contacts/cdd_agreement/lda_unfavorable_contacts.csv "
+                          "(default: results/rescoring)")
+    args = ap.parse_args()
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    contacts = load_all_contacts(args.per_complex_dir)
     print(f"[rescore_redocked_aggregate] loaded {len(contacts)} rows from "
           f"{contacts['complex_id'].nunique()} redocked complexes "
           f"({contacts[contacts['role'] == 'importer']['complex_id'].nunique()} importer, "
           f"{contacts[contacts['role'] == 'non_importer']['complex_id'].nunique()} non_importer)")
     contacts = add_position(contacts)
-    contacts.to_csv(OUT_DIR / "all_contacts.csv", index=False)
+    contacts.to_csv(out_dir / "all_contacts.csv", index=False)
 
     agreement = cdd_agreement(contacts)
-    agreement.to_csv(OUT_DIR / "cdd_agreement.csv", index=False)
+    agreement.to_csv(out_dir / "cdd_agreement.csv", index=False)
     print(f"[rescore_redocked_aggregate] wrote cdd_agreement.csv ({len(agreement)} protein rows)")
 
     for role in ["importer", "non_importer"]:
@@ -215,7 +227,7 @@ def main() -> None:
             print(f"[rescore_redocked_aggregate] REDOCKED importer improvement: "
                   f"precision {base_precision:.3f} -> {redocked_precision:.3f}, "
                   f"recall {base_recall:.3f} -> {redocked_recall:.3f}")
-        baseline.to_csv(OUT_DIR / "ab_initio_rosetta_baseline_cdd_agreement.csv", index=False)
+        baseline.to_csv(out_dir / "ab_initio_rosetta_baseline_cdd_agreement.csv", index=False)
 
     plip_path = config.RESULTS_DIR / "plip_cdd_agreement.csv"
     if plip_path.exists():
@@ -228,7 +240,7 @@ def main() -> None:
                   f"(the ~50% figure): pooled precision={plip_precision:.3f}, pooled recall={plip_recall:.3f}")
 
     unfavorable = lda_unfavorable(contacts)
-    unfavorable.to_csv(OUT_DIR / "lda_unfavorable_contacts.csv", index=False)
+    unfavorable.to_csv(out_dir / "lda_unfavorable_contacts.csv", index=False)
     n_unfav = int(unfavorable["unfavorable"].sum())
     print(f"[rescore_redocked_aggregate] wrote lda_unfavorable_contacts.csv "
           f"({len(unfavorable)} (protein, position) rows, {n_unfav} flagged unfavorable)")

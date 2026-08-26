@@ -45,8 +45,6 @@ import csv
 import json
 from pathlib import Path
 
-import json
-
 import gemmi
 import numpy as np
 
