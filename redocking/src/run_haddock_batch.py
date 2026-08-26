@@ -121,6 +121,13 @@ def main() -> None:
                               "submit_abcfold.sh's METADATA_PYTHON comment for why absolute path, "
                               "not `conda activate`, inside a job script).")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-existing", action="store_true",
+                         help="skip any complex whose results/haddock_runs/<complex_id>/ run_dir already "
+                              "exists and is non-empty -- HADDOCK3 itself refuses to write into a non-empty "
+                              "run_dir, so resubmitting an already-completed complex would just fail "
+                              "immediately and waste an array slot. Use this when extending an existing "
+                              "manifest with new rows (e.g. after make_manifest.py adds new proteins) rather "
+                              "than starting a run from scratch.")
     args = parser.parse_args()
 
     haddock3_bin = f"/shared/projects/npf_abinitio/conda/envs/{args.env_name}/bin/haddock3"
@@ -131,11 +138,21 @@ def main() -> None:
         rows = list(csv.DictReader(f))
 
     cfg_paths = []
+    n_skipped = 0
     for row in rows:
+        if args.skip_existing:
+            run_dir = config.HADDOCK_RUNS_DIR / row["complex_id"]
+            if run_dir.exists() and any(run_dir.iterdir()):
+                n_skipped += 1
+                continue
         cfg_path = cfgs_dir / f"{row['complex_id']}.cfg"
         if not cfg_path.exists():
             raise FileNotFoundError(f"{cfg_path} not found -- run make_haddock_cfg.py first.")
         cfg_paths.append(cfg_path)
+
+    if args.skip_existing:
+        print(f"--skip-existing: {n_skipped} complex(es) already have a run_dir, submitting the "
+              f"remaining {len(cfg_paths)}/{len(rows)}")
 
     manifest_path = cfgs_dir / "array_manifest.txt"
     write_manifest(cfg_paths, manifest_path)

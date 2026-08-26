@@ -2,16 +2,46 @@
 redocking/src/make_manifest.py
 =================================
 Stage 2: this run's receptor complexes -- one structure per (protein,
-macro-conformation ca_cluster) for every NPF_LDA_kernel HC importer/non-
-importer that has both CDD pocket residues and usable clustering output.
-Per-protein pca_k3 clustering typically yields 3 macro-conformations
-(ca_cluster 0/1/2) -- rather than picking a single "primary" cluster's
-pose (this pipeline's earlier, smaller pilot), every usable macro-
-conformation gets its own docking run, since different backbone
-conformations (e.g. inward- vs outward-facing transporter states) can
-have meaningfully different pocket accessibility -- confirmed by hand
-(2026-08-25) that all 24 candidate proteins have exactly 3 such clusters,
-giving 72 total complexes (5 importers x 3 + 19 non-importers x 3).
+macro-conformation ca_cluster) for every CDD-annotated protein in the
+corpus (48 of 53 -- the 5 without CDD pocket residues at all are the only
+ones excluded outright). Per-protein pca_k3 clustering typically yields 3
+macro-conformations (ca_cluster 0/1/2) -- rather than picking a single
+"primary" cluster's pose, every usable macro-conformation gets its own
+docking run, since different backbone conformations (e.g. inward- vs
+outward-facing transporter states) can have meaningfully different pocket
+accessibility -- confirmed by hand that all 48 candidate proteins have
+exactly 3 such clusters, giving 144 total complexes.
+
+**2026-08-26: extended from the original 24-protein scope** (NPF_LDA_kernel's
+curated `hc_importers`/`hc_non_importers` lists only, 72 complexes) to the
+full CDD-annotated corpus, at the user's request -- more non_importer-side
+data means more statistical power for `rescoring/src/scan_position_cohesion.py`'s
+importer-vs-non-importer position scan. Every CDD-annotated protein gets a
+role via `_classify_role()`:
+  - **importer**: in `hc_importers` AND actually co-folded with GA1 here
+    (`ligand_for() == "GA1"` -- see the note on that function below). Still
+    exactly 5 (unchanged from the original scope).
+  - **non_importer**: either in `hc_non_importers` (19, unchanged), OR any
+    other CDD-annotated protein NOT co-folded with GA1 here (confirmed
+    co-folded with something else -- nitrate/ABA/JA-Ile/quercetin-3-O-
+    sophoroside -- or apoform only) -- 22 new proteins, all using the SAME
+    apoform receptor status as the original 19, for a consistent,
+    ligand-choice-unbiased receptor conformation across the whole
+    non_importer population regardless of what ligand (if any) a given
+    protein happens to be assigned elsewhere in this pipeline.
+  - **ambiguous**: CDD-annotated, actually co-folded with GA1 here, but
+    NOT in NPF_LDA_kernel's curated `hc_importers` list -- 2 proteins
+    (`NPF2.1_Q9M171`, `NPF5.6_P0CI03`) ABCfold happened to test with GA1
+    without a curated confirmed-importer label backing that choice. Per
+    the user (2026-08-26): redock them (their real ABCfold GA1 pose is
+    already there for a Stage-7 RMSD comparison, same as importers get),
+    but exclude them from the importer-vs-non-importer statistics
+    everywhere downstream until their status is actually confirmed --
+    `compare_to_abcfold.py`/`rescore_redocked_aggregate.py`/
+    `scan_position_cohesion.py` only ever loop over
+    `["importer", "non_importer"]` explicitly, so `ambiguous` rows are
+    already excluded from every pooled statistic without any extra code
+    -- just don't add "ambiguous" to those loops.
 
 Receptor source: results/tm_reannotated/<protein>/pca_k3/assignments.parquet
 + .../cluster_<id>/<frame_id>.cif (worflows/postprocessing's own TM-
@@ -23,9 +53,7 @@ get deleted by this pipeline's own storage-compression step once run on
 the cluster (confirmed by hand: 16 of the original 24 manifest rows'
 raw CIFs were already gone on the IFB cluster, still present locally) --
 tm_reannotated's `symlinked == True` frames are a separately curated,
-stable subset that survives that compression, and cover both apo and holo
-frames identically, so importers and non-importers now share one
-selection code path instead of two.
+stable subset that survives that compression.
 
 Per-(protein, ca_cluster) representative pick: among symlinked frames in
 that cluster, highest ptm (overall fold confidence -- the receptor's own
@@ -34,8 +62,8 @@ since the ab initio ligand pose is discarded and redocked fresh), frame_id
 as a deterministic tiebreak.
 
 Output: data/manifest.csv (complex_id, protein, role [importer/
-non_importer], form [holo/apo], ca_cluster, receptor_cif) + a coverage
-report printed to stdout (skipped proteins + why).
+non_importer/ambiguous], form [holo/apo], ca_cluster, receptor_cif) + a
+coverage report printed to stdout (skipped proteins + why).
 """
 from __future__ import annotations
 
@@ -59,18 +87,33 @@ sys.path.insert(0, str(config.PIPELINE_ROOT / "scripts"))
 from ligand_assignment import ligand_for  # noqa: E402
 
 
-def _full_protein_name(short_name: str) -> str | None:
-    """'NPF2.10' -> 'NPF2.10_Q944G5', by matching against whichever
-    tm_reannotated protein directories exist -- avoids hardcoding UniProt
-    accessions here. None if no match found."""
-    if not config.TM_REANNOTATED_ROOT.exists():
-        return None
-    candidates = [d.name for d in config.TM_REANNOTATED_ROOT.iterdir() if d.name.startswith(short_name + "_")]
-    if not candidates:
-        return None
-    if len(candidates) > 1:
-        raise ValueError(f"{short_name!r} matched multiple full names: {sorted(candidates)}")
-    return candidates[0]
+def _classify_role(short: str, importers: set[str], non_importers: set[str]) -> tuple[str, str]:
+    """(role, receptor status) for one protein, given its short name (e.g.
+    'NPF2.1') -- see module docstring for the 3-way importer/non_importer/
+    ambiguous split.
+
+    Per the user (2026-08-26): a curated `hc_importers` protein this
+    pipeline happened to co-fold with a DIFFERENT ligand (nitrate, for
+    NPF1.1/NPF1.2/NPF2.3/NPF2.4/NPF2.7 -- real biology, not a data error:
+    several NPF transporters are dual/low-affinity GA1 importers on top of
+    their primary nitrate role) is still a real importer, just without an
+    ABCfold GA1 pose to compare against -- do NOT skip it. Use the
+    ligand-unbiased apoform receptor for these (same choice non_importer
+    already uses) instead of their nitrate-bound holoform, and let
+    compare_to_abcfold.py fall back to the non-importer-style pocket-
+    engagement comparison for them (no RMSD-vs-ABCfold-pose is possible
+    without a real GA1 pose) while still counting them as `role=importer`
+    everywhere else (rescore_redocked_aggregate.py's CDD agreement,
+    scan_position_cohesion.py's Mann-Whitney test, etc.) -- exactly the
+    additional importer-side statistical power this expansion exists for."""
+    lig = ligand_for(short)
+    if short in importers:
+        return ("importer", "holo") if lig == config.LIGAND_KEY else ("importer", "apo")
+    if short in non_importers:
+        return "non_importer", "apo"
+    if lig == config.LIGAND_KEY:
+        return "ambiguous", "holo"
+    return "non_importer", "apo"
 
 
 def _cluster_representatives(protein: str, status: str) -> list[dict] | None:
@@ -106,24 +149,12 @@ def build_manifest() -> tuple[list[dict], list[str]]:
     manifest_rows: list[dict] = []
     skipped: list[str] = []
 
-    candidates = (
-        [(short, "importer", "holo") for short in config.load_importers()]
-        + [(short, "non_importer", "apo") for short in config.load_non_importers()]
-    )
+    importers = set(config.load_importers())
+    non_importers = set(config.load_non_importers())
 
-    for short, role, status in candidates:
-        if role == "importer" and ligand_for(short) != config.LIGAND_KEY:
-            skipped.append(f"{short}: assigned ligand is {ligand_for(short)!r} in this pipeline, "
-                            f"not {config.LIGAND_KEY!r} -- its holoform conformation was never "
-                            f"challenged with GA1, and there's no GA1 ABCfold pose to compare against")
-            continue
-        full = _full_protein_name(short)
-        if full is None:
-            skipped.append(f"{short}: no tm_reannotated clustering output found at all")
-            continue
-        if not config.has_cdd_residues(full):
-            skipped.append(f"{full}: no CDD pocket residues (see config.load_cdd_residues docstring)")
-            continue
+    for full in config.cdd_annotated_proteins():
+        short = full.split("_")[0]
+        role, status = _classify_role(short, importers, non_importers)
         reps = _cluster_representatives(full, status)
         if reps is None:
             skipped.append(f"{full}: no assignments.parquet found")
@@ -156,8 +187,9 @@ def main() -> None:
 
     n_importer = sum(1 for r in rows if r["role"] == "importer")
     n_non_importer = sum(1 for r in rows if r["role"] == "non_importer")
+    n_ambiguous = sum(1 for r in rows if r["role"] == "ambiguous")
     print(f"Wrote {len(rows)} rows to {config.MANIFEST_CSV} "
-          f"({n_importer} importer, {n_non_importer} non_importer)")
+          f"({n_importer} importer, {n_non_importer} non_importer, {n_ambiguous} ambiguous)")
     for r in rows:
         print(f"  {r['role']:>13s}  {r['protein']:<16s}  ca{r['ca_cluster']}  {r['receptor_cif']}")
 

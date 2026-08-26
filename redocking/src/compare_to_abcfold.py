@@ -3,21 +3,31 @@ redocking/src/compare_to_abcfold.py
 ======================================
 Stage 7: the actual question this whole pipeline exists to answer.
 
-- **Importer complex**: does HADDOCK3's physics-based redocking converge on
-  a GA1 pose similar to what ABCfold's ab initio cofolding predicted, or a
-  different one? Computed as ligand heavy-atom RMSD between HADDOCK3's
-  top-ranked model and the original ABCfold holoform pose, AFTER
-  superposing the two receptors' C-alpha atoms (HADDOCK3's flexref step
-  lets the backbone move slightly, so ligand RMSD must be computed in a
-  common receptor frame, not assumed already-aligned).
-- **Non-importer complexes**: there is no ABCfold ligand pose to compare
-  against (apoform). The question instead is whether HADDOCK3 found ANY
-  stable pose engaging the CDD-annotated pocket at all -- computed as
+Routing is by manifest `form`, not `role` (2026-08-26: importer no longer
+implies "has a GA1 ABCfold pose" -- see make_manifest.py's `_classify_role`
+docstring, curated importers co-folded with a different ligand here still
+count as importer but use an apoform receptor):
+
+- **form == "holo"** (a real GA1 ABCfold pose exists -- the 5 original
+  GA1-cofolded importers plus the 2 "ambiguous" proteins): does HADDOCK3's
+  physics-based redocking converge on a GA1 pose similar to what ABCfold's
+  ab initio cofolding predicted, or a different one? Computed as ligand
+  heavy-atom RMSD between HADDOCK3's top-ranked model and the original
+  ABCfold holoform pose, AFTER superposing the two receptors' C-alpha
+  atoms (HADDOCK3's flexref step lets the backbone move slightly, so
+  ligand RMSD must be computed in a common receptor frame, not assumed
+  already-aligned).
+- **form == "apo"** (no ABCfold ligand pose to compare against -- every
+  non_importer, plus the 5 curated-importer-but-not-GA1-cofolded
+  proteins): the question instead is whether HADDOCK3 found ANY stable
+  pose engaging the CDD-annotated pocket at all -- computed as
   ligand-heavy-atom-to-CDD-active-residue contacts (<= 4.5 A) for each of
-  the top-N models by HADDOCK score. Low/no pocket engagement across the
-  top models is consistent with (not proof of) the non-importer
-  classification; strong engagement would be the more surprising,
-  worth-investigating result.
+  the top-N models by HADDOCK score. Low/no pocket engagement is
+  consistent with (not proof of) a non-importer classification; for the
+  apoform importers specifically, it's the opposite prior (some real
+  engagement is expected even though these are known lower-efficiency
+  GA1 importers), so treat this comparison as complementary to Stage 8's
+  fuller ensemble scan, not the whole story either way.
 
 Reads HADDOCK3's own `capri_ss.tsv` from the run's last `*_caprieval/`
 step directory (per-model, ranked by HADDOCK score). **No cluster_id/
@@ -167,7 +177,7 @@ def _abcfold_ligand_chain(protein: str) -> str:
     raise ValueError(f"{path} has no 'ligand' entry in its sequences list")
 
 
-def compare_importer(complex_id: str, haddock_model_pdb: Path, abcfold_cif: Path, protein: str) -> dict:
+def compare_importer(complex_id: str, haddock_model_pdb: Path, abcfold_cif: Path, protein: str, role: str) -> dict:
     haddock_st = gemmi.read_structure(str(haddock_model_pdb))
     haddock_st.setup_entities()
     abcfold_st = gemmi.read_structure(str(abcfold_cif))
@@ -196,13 +206,13 @@ def compare_importer(complex_id: str, haddock_model_pdb: Path, abcfold_cif: Path
     ligand_rmsd = float(np.sqrt(np.mean(np.sum((haddock_ligand_superposed - abcfold_ligand) ** 2, axis=1))))
 
     return {
-        "complex_id": complex_id, "role": "importer",
+        "complex_id": complex_id, "role": role,
         "receptor_ca_superposition_rmsd": receptor_rmsd,
         "ligand_rmsd_vs_abcfold_pose": ligand_rmsd,
     }
 
 
-def compare_non_importer(complex_id: str, protein: str, run_dir: Path) -> dict:
+def compare_pocket_engagement(complex_id: str, protein: str, role: str, run_dir: Path) -> dict:
     active_residues = set(config.load_cdd_residues(protein))
     top_models = top_n_models(run_dir, TOP_N_NON_IMPORTER)
     model_results = []
@@ -233,7 +243,7 @@ def compare_non_importer(complex_id: str, protein: str, run_dir: Path) -> dict:
             "n_active_residues_total": len(active_residues),
         })
 
-    return {"complex_id": complex_id, "role": "non_importer", "top_models": model_results}
+    return {"complex_id": complex_id, "role": role, "top_models": model_results}
 
 
 def main() -> None:
@@ -243,19 +253,26 @@ def main() -> None:
     summary_rows = []
     for row in rows:
         complex_id = row["complex_id"]
+        role = row["role"]
         run_dir = config.HADDOCK_RUNS_DIR / complex_id
         out_path = config.COMPARISON_DIR / f"{complex_id}_comparison.json"
 
-        if row["role"] == "importer":
+        # form=="holo" is the reliable signal a real GA1 ABCfold pose exists to compare
+        # against -- true for the original 5 GA1-cofolded importers AND the 2 "ambiguous"
+        # proteins, but NOT for the 5 curated-importer-but-nitrate-cofolded ones added
+        # 2026-08-26 (see make_manifest.py's _classify_role docstring) -- those fall back
+        # to the same pocket-engagement comparison non_importer complexes use, just still
+        # tagged role="importer" so they count toward importer statistics everywhere else.
+        if row["form"] == "holo":
             model_path, _ = top_ranked_model(run_dir)
             abcfold_cif = config.PIPELINE_ROOT / row["receptor_cif"]
-            result = compare_importer(complex_id, model_path, abcfold_cif, row["protein"])
-            summary_rows.append({"complex_id": complex_id, "role": "importer",
+            result = compare_importer(complex_id, model_path, abcfold_cif, row["protein"], role)
+            summary_rows.append({"complex_id": complex_id, "role": role,
                                   "ligand_rmsd_vs_abcfold_pose": result["ligand_rmsd_vs_abcfold_pose"]})
         else:
-            result = compare_non_importer(complex_id, row["protein"], run_dir)
+            result = compare_pocket_engagement(complex_id, row["protein"], role, run_dir)
             best = result["top_models"][0] if result["top_models"] else {}  # rank 1 == best score
-            summary_rows.append({"complex_id": complex_id, "role": "non_importer",
+            summary_rows.append({"complex_id": complex_id, "role": role,
                                   "best_model_pocket_contacts": best.get("n_active_residues_contacted", "")})
 
         config.COMPARISON_DIR.mkdir(parents=True, exist_ok=True)

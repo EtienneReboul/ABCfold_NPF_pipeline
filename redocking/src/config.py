@@ -99,6 +99,19 @@ def has_cdd_residues(protein_name: str) -> bool:
     return protein_name in summary and bool(summary[protein_name].get("residues"))
 
 
+def cdd_annotated_proteins() -> list[str]:
+    """Every full protein name (e.g. 'NPF2.10_Q944G5') with nonempty CDD
+    pocket residues -- the full-corpus candidate pool make_manifest.py
+    scans, not just NPF_LDA_kernel's curated hc_importers/hc_non_importers
+    lists (2026-08-26: extended from the 24-protein curated-only scope to
+    every CDD-annotated protein, 48 of the corpus's 53 -- see
+    make_manifest.py's module docstring for the role-classification logic
+    this enables)."""
+    import json
+    summary = json.loads(CDD_SUMMARY_JSON.read_text())
+    return sorted(p for p, v in summary.items() if v.get("residues"))
+
+
 def load_cdd_residues(protein_name: str) -> list[int]:
     """CDD/InterPro putative pocket residues for one protein (structure
     numbering, no remapping needed) -- see NPF_pocket_pipeline/scripts/
