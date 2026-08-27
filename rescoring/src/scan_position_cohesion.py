@@ -5,15 +5,28 @@ rescoring/src/scan_position_cohesion.py
 Systematic version of the ad hoc position-by-position check done by hand
 in conversation (positions 2, 20, 27, prompted by eyeballing
 `haddock_redocking_exploration.ipynb`'s LDA-vs-Rosetta-energy scatter): for
-EVERY CDD pocket position (1-35), how cleanly does Rosetta's own redocked-
-pose energetics separate GA1 importers from non-importers, and does that
-line up with NPF_LDA_kernel's own sequence-only importance for that
-position?
+EVERY position Rosetta actually finds GA1 in contact with -- not just the
+35 CDD-annotated ones -- how cleanly does that redocked-pose energetics
+separate GA1 importers from non-importers, and does it line up with
+NPF_LDA_kernel's own sequence-only importance where that even exists?
 
-Reads `redocking/results/rescoring/lda_unfavorable_contacts.csv`
-(rescore_redocked_aggregate.py's own output: one row per (protein, role,
-position) actually contacted in >=1 redocked complex, with that protein's
-mean ligand<->residue twobody_total at that position) -- no
+**2026-08-26, at the user's request**: restricting this scan to the CDD
+putative binding site would silently ignore any real importer/non-importer
+signal sitting on a residue CDD/InterPro's own domain model didn't flag.
+Defaults to `redocking/results/rescoring/position_energetics_full.csv`
+(all 746 whole-alignment positions, `build_position_mapping.py --full`'s
+mapping -- reuses the SAME already-validated sequence alignment the 35
+CDD positions come from, not a new structural TM-helix realignment; see
+that script's own --full-mode caveat on why a position outside the pocket
+is a lead worth checking against the real 3D structure, not as solid a
+hit as a CDD-position one). `is_cdd_pocket` is carried through on every
+row so the report always shows which kind of hit it is. Pass
+`--cdd-only` to fall back to the original 35-position-only scan
+(`lda_unfavorable_contacts.csv`) for a direct before/after comparison.
+
+Reads rescore_redocked_aggregate.py's own output directly -- one row per
+(protein, role, position) actually contacted in >=1 redocked complex, with
+that protein's mean ligand<->residue twobody_total at that position -- no
 re-aggregation, this scan just re-slices data that already exists.
 
 For each position (with enough proteins on both sides to mean anything --
@@ -59,8 +72,10 @@ from scipy.stats import mannwhitneyu
 
 import config
 
-LDA_UNFAVORABLE_CSV = config.PIPELINE_ROOT / "redocking" / "results" / "rescoring" / "lda_unfavorable_contacts.csv"
-OUT_CSV = config.PIPELINE_ROOT / "redocking" / "results" / "rescoring" / "position_cohesion_scan.csv"
+REDOCKING_RESCORING_DIR = config.PIPELINE_ROOT / "redocking" / "results" / "rescoring"
+FULL_ENERGETICS_CSV = REDOCKING_RESCORING_DIR / "position_energetics_full.csv"
+CDD_ONLY_CSV = REDOCKING_RESCORING_DIR / "lda_unfavorable_contacts.csv"
+OUT_CSV = REDOCKING_RESCORING_DIR / "position_cohesion_scan.csv"
 LDA_LOADINGS_TSV = config.DATA_DIR / "lda_GA1_loadings.tsv"
 
 
@@ -91,8 +106,13 @@ def scan(lda_unfavorable: pd.DataFrame, loadings: pd.DataFrame,
         except ValueError:
             p = float("nan")
 
-        z_name, z_coef = dominant_z_scale(loadings, position)
-        rows.append(dict(
+        # "position" here can be the 1-746 whole-alignment index (--full mode) -- the
+        # LDA Z-scale lookup always needs the 1-35 CDD numbering instead, carried
+        # through as "cdd_position" (NaN outside the pocket) when that column exists;
+        # CDD-only mode has no separate column, and there "position" already is 1-35.
+        cdd_position = group["cdd_position"].iloc[0] if "cdd_position" in group.columns else position
+        z_name, z_coef = dominant_z_scale(loadings, cdd_position) if pd.notna(cdd_position) else ("?", float("nan"))
+        row = dict(
             position=position,
             n_importer=len(imp), n_non_importer=len(non),
             frac_unfavorable_importer=frac_unfav_imp, frac_unfavorable_non_importer=frac_unfav_non,
@@ -103,12 +123,20 @@ def scan(lda_unfavorable: pd.DataFrame, loadings: pd.DataFrame,
             direction="importer_favorable" if mean_imp < mean_non else "non_importer_favorable",
             lda_importance=group["lda_importance"].iloc[0],
             dominant_z_scale=z_name, dominant_z_coef=z_coef,
-        ))
+        )
+        if "is_cdd_pocket" in group.columns:
+            row["is_cdd_pocket"] = bool(group["is_cdd_pocket"].iloc[0])
+            row["cdd_position"] = cdd_position
+        rows.append(row)
     return pd.DataFrame(rows).sort_values("mannwhitney_p")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--cdd-only", action="store_true",
+                     help="scan only the 35 CDD pocket positions (lda_unfavorable_contacts.csv), "
+                          "the original narrower scope -- default now scans all 746 whole-alignment "
+                          "positions (position_energetics_full.csv)")
     ap.add_argument("--min-importer-n", type=int, default=4,
                      help="minimum importer proteins with a contact at a position to consider it (default 4/5)")
     ap.add_argument("--min-non-importer-n", type=int, default=12,
@@ -122,15 +150,30 @@ def main() -> None:
                      help="importer side must be mostly favorable (default: at most 25% of importers unfavorable)")
     args = ap.parse_args()
 
-    lda_unfavorable = pd.read_csv(LDA_UNFAVORABLE_CSV)
+    if args.cdd_only:
+        energetics_csv = CDD_ONLY_CSV
+        n_total_positions = "35"
+    else:
+        if not FULL_ENERGETICS_CSV.exists():
+            raise SystemExit(f"{FULL_ENERGETICS_CSV} not found -- run "
+                              "build_position_mapping.py --full then rescore_redocked_aggregate.py first, "
+                              "or pass --cdd-only for the narrower 35-position scan.")
+        energetics_csv = FULL_ENERGETICS_CSV
+        n_total_positions = "746"
+
+    energetics = pd.read_csv(energetics_csv)
     loadings = pd.read_csv(LDA_LOADINGS_TSV, sep="\t")
 
-    result = scan(lda_unfavorable, loadings, args.min_importer_n, args.min_non_importer_n)
+    result = scan(energetics, loadings, args.min_importer_n, args.min_non_importer_n)
     result.to_csv(OUT_CSV, index=False)
-    print(f"[scan_position_cohesion] wrote {OUT_CSV} ({len(result)}/35 positions cleared the coverage minimums)")
-    print("[scan_position_cohesion] CAVEAT: importer n<=5 per position -- Mann-Whitney p-values here are a "
-          "ranking heuristic across positions, not multiple-testing-corrected significance claims. Treat this "
-          "as a shortlist to prioritize experimental follow-up, not a finished result.\n")
+    n_cdd = int(result["is_cdd_pocket"].sum()) if "is_cdd_pocket" in result.columns else len(result)
+    print(f"[scan_position_cohesion] wrote {OUT_CSV} ({len(result)}/{n_total_positions} positions cleared "
+          f"the coverage minimums" + (f", {n_cdd} inside the CDD pocket, {len(result) - n_cdd} outside)" if "is_cdd_pocket" in result.columns else ")"))
+    print("[scan_position_cohesion] CAVEAT: importer n<=10 per position -- Mann-Whitney p-values here are a "
+          "ranking heuristic across positions, not multiple-testing-corrected significance claims. Positions "
+          "outside the CDD pocket additionally rely on a sequence-only (not structural) alignment there -- see "
+          "build_position_mapping.py --full's own caveat. Treat this as a shortlist to prioritize experimental "
+          "follow-up, not a finished result.\n")
 
     shortlist = result[
         (result["mannwhitney_p"] <= args.p_threshold)
@@ -143,6 +186,8 @@ def main() -> None:
           f"importer unfavorable frac<={args.max_importer_unfavorable_frac}):\n")
     cols = ["position", "n_importer", "n_non_importer", "frac_unfavorable_importer",
             "frac_unfavorable_non_importer", "mannwhitney_p", "lda_importance", "dominant_z_scale"]
+    if "is_cdd_pocket" in result.columns:
+        cols += ["is_cdd_pocket", "cdd_position"]
     print(shortlist[cols].to_string(index=False))
 
     print("\n[scan_position_cohesion] full ranking (top 15 by p-value):")

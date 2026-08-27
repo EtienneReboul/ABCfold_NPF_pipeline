@@ -46,9 +46,16 @@ Run after rescore_redocked_batch.py has produced at least some
 redocking/results/rescoring/per_complex/*.csv.
 
 Output (all under redocking/results/rescoring/):
-  all_contacts.csv              pooled long table, position-mapped
+  all_contacts.csv              pooled long table, position-mapped (35 CDD positions only)
   cdd_agreement.csv             per (protein, role): precision/recall vs. CDD
-  lda_unfavorable_contacts.csv  per (protein, position): mean energy vs. LDA importance
+  lda_unfavorable_contacts.csv  per (protein, position): mean energy vs. LDA importance (CDD positions only)
+  position_energetics_full.csv  same as above, but every one of the 746 whole-alignment
+                                 positions (build_position_mapping.py --full), with an
+                                 is_cdd_pocket column -- 2026-08-26, at the user's request:
+                                 a Rosetta-contacted residue outside the CDD-annotated
+                                 pocket is still a real signal, not silently dropped.
+                                 lda_importance is NaN outside the 35 CDD positions (the
+                                 classifier was never fit there).
 """
 from __future__ import annotations
 
@@ -85,16 +92,21 @@ def load_all_contacts(per_complex_dir: Path) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def add_position(contacts: pd.DataFrame) -> pd.DataFrame:
-    position_map = pd.read_csv(config.POSITION_RESNR_MAP_CSV)
+def add_position(contacts: pd.DataFrame, position_map_csv: Path = config.POSITION_RESNR_MAP_CSV) -> pd.DataFrame:
+    """Merge in `position` (and `is_cdd_pocket`, when using the --full map --
+    see build_position_mapping.py) for every contact row. Defaults to the
+    35-CDD-position-only map (unchanged behavior); pass
+    config.POSITION_RESNR_MAP_FULL_CSV for the whole-alignment (746-column)
+    version instead -- see main()'s two separate calls."""
+    position_map = pd.read_csv(position_map_csv)
     merged = contacts.merge(
         position_map, left_on=["protein", "prot_resi"], right_on=["protein", "resnr"], how="left",
     )
     n_unmapped = merged["position"].isna().sum()
     if n_unmapped:
+        scope = "the CDD-mapped alignment" if position_map_csv == config.POSITION_RESNR_MAP_FULL_CSV else "the 35 CDD pocket positions"
         print(f"[rescore_redocked_aggregate] NOTE: {n_unmapped}/{len(merged)} contact rows are outside "
-              "the 35 CDD pocket positions -- kept with position=NaN for all_contacts.csv, dropped "
-              "from the position-indexed aggregates below.")
+              f"{scope} -- kept with position=NaN, dropped from the position-indexed aggregates below.")
     return merged
 
 
@@ -142,25 +154,43 @@ def lda_unfavorable(contacts_with_position: pd.DataFrame) -> pd.DataFrame:
     mean ligand<->residue twobody_total (this position's net Rosetta
     energetic contribution, averaged across that protein's replicas/
     ca_clusters where contacted) next to NPF_LDA_kernel's sequence-derived
-    importance for that position. `unfavorable` = mean energy > 0 (net
-    repulsive/destabilizing) despite the position being one the sequence
-    classifier flags as relevant."""
+    importance for that position (NaN outside the 35 CDD positions -- the
+    classifier was only ever fit there, see build_position_mapping.py's
+    --full-mode caveat). `unfavorable` = mean energy > 0 (net repulsive/
+    destabilizing). Works on either the CDD-only or --full position map
+    (whichever `add_position()` call produced `contacts_with_position`) --
+    carries `is_cdd_pocket` through when that column is present, so a
+    --full-mode caller can tell pocket hits from outside-pocket ones."""
     importance_path = config.DATA_DIR / "position_importance_GA1.tsv"
     importance = pd.read_csv(importance_path, sep="\t")
 
     mapped = contacts_with_position.dropna(subset=["position"])
     # one twobody_total per (complex_id, position) -- dedupe across scoretype rows
     per_edge = mapped.drop_duplicates(["complex_id", "position"])
+    has_cdd_flag = "is_cdd_pocket" in per_edge.columns
+    # --full mode's "position" is a 1-746 whole-alignment index, a DIFFERENT numbering
+    # scheme than lda_GA1_loadings.tsv/position_importance_GA1.tsv's own 1-35 CDD
+    # "position" column -- the LDA-importance merge below must use "cdd_position"
+    # (build_position_mapping.py --full's own 1-35-numbered column, NaN outside the
+    # pocket) when present, not "position" itself. CDD-only mode has no separate
+    # cdd_position column -- there, "position" already IS the 1-35 numbering.
+    merge_key = "cdd_position" if "cdd_position" in per_edge.columns else "position"
 
     rows = []
     for (protein, role, position), group in per_edge.groupby(["protein", "role", "position"]):
         mean_energy = group["twobody_total"].mean()
-        rows.append(dict(
+        row = dict(
             protein=protein, role=role, position=position,
             mean_twobody_total=mean_energy, n=len(group),
             resnr_examples=sorted(group["prot_resi"].unique().tolist())[:3],
-        ))
-    result = pd.DataFrame(rows).merge(importance, on="position", how="left")
+        )
+        if has_cdd_flag:
+            row["is_cdd_pocket"] = bool(group["is_cdd_pocket"].iloc[0])
+            row["cdd_position"] = group["cdd_position"].iloc[0] if "cdd_position" in group.columns else None
+        rows.append(row)
+    result = pd.DataFrame(rows).merge(
+        importance.rename(columns={"position": merge_key}), on=merge_key, how="left",
+    )
     result = result.rename(columns={"importance": "lda_importance"})
     result["unfavorable"] = result["mean_twobody_total"] > 0
     return result.sort_values(["role", "protein", "lda_importance"], ascending=[True, True, False])
@@ -198,12 +228,12 @@ def main() -> None:
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    contacts = load_all_contacts(args.per_complex_dir)
-    print(f"[rescore_redocked_aggregate] loaded {len(contacts)} rows from "
-          f"{contacts['complex_id'].nunique()} redocked complexes "
-          f"({contacts[contacts['role'] == 'importer']['complex_id'].nunique()} importer, "
-          f"{contacts[contacts['role'] == 'non_importer']['complex_id'].nunique()} non_importer)")
-    contacts = add_position(contacts)
+    raw_contacts = load_all_contacts(args.per_complex_dir)
+    print(f"[rescore_redocked_aggregate] loaded {len(raw_contacts)} rows from "
+          f"{raw_contacts['complex_id'].nunique()} redocked complexes "
+          f"({raw_contacts[raw_contacts['role'] == 'importer']['complex_id'].nunique()} importer, "
+          f"{raw_contacts[raw_contacts['role'] == 'non_importer']['complex_id'].nunique()} non_importer)")
+    contacts = add_position(raw_contacts)
     contacts.to_csv(out_dir / "all_contacts.csv", index=False)
 
     agreement = cdd_agreement(contacts)
@@ -244,6 +274,24 @@ def main() -> None:
     n_unfav = int(unfavorable["unfavorable"].sum())
     print(f"[rescore_redocked_aggregate] wrote lda_unfavorable_contacts.csv "
           f"({len(unfavorable)} (protein, position) rows, {n_unfav} flagged unfavorable)")
+
+    # Whole-alignment (746-column) version, at the user's request (2026-08-26):
+    # a Rosetta-contacted residue outside the 35 CDD positions is still a real
+    # signal -- see build_position_mapping.py's --full mode and its own caveat
+    # (sequence, not structural, alignment outside the pocket). cdd_agreement()
+    # deliberately still only uses the CDD-only `contacts` above -- precision/
+    # recall vs. the CDD pocket is a CDD-specific question by definition.
+    if config.POSITION_RESNR_MAP_FULL_CSV.exists():
+        contacts_full = add_position(raw_contacts, config.POSITION_RESNR_MAP_FULL_CSV)
+        unfavorable_full = lda_unfavorable(contacts_full)
+        unfavorable_full.to_csv(out_dir / "position_energetics_full.csv", index=False)
+        n_outside_cdd = int((~unfavorable_full["is_cdd_pocket"]).sum())
+        print(f"[rescore_redocked_aggregate] wrote position_energetics_full.csv "
+              f"({len(unfavorable_full)} (protein, position) rows across all 746 alignment columns, "
+              f"{n_outside_cdd} outside the 35 CDD positions)")
+    else:
+        print(f"[rescore_redocked_aggregate] {config.POSITION_RESNR_MAP_FULL_CSV} not found -- run "
+              "build_position_mapping.py --full first for the whole-alignment position scan.")
 
 
 if __name__ == "__main__":

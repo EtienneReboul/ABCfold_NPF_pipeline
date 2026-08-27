@@ -39,6 +39,12 @@ SEQ_SENTINEL = SEQUENCES_DIR / "sequences.done"
 
 MANIFEST_CSV = DATA_DIR / "manifest.csv"
 POSITION_RESNR_MAP_CSV = DATA_DIR / "position_resnr_map.csv"
+# Whole-alignment (all 746 npf_aligned.sto columns, not just the 35 CDD
+# pocket ones) version of the same mapping -- see
+# build_position_mapping.py's --full mode. 2026-08-26, at the user's
+# request: a Rosetta-contacted residue outside the CDD-annotated pocket
+# is still a real signal the 35-position-only scan silently drops.
+POSITION_RESNR_MAP_FULL_CSV = DATA_DIR / "position_resnr_map_full.csv"
 
 # The clustering method_tag every complex in the manifest is drawn from —
 # see scripts/cluster_conformations.py's MACRO_METHOD_TAG. Fixed here (not
