@@ -56,19 +56,26 @@ see --min-importer-n/--min-non-importer-n):
     to capture well -- this is why some LDA-important positions translate
     into a clean Rosetta-energetic split and others don't.
 
+**2026-08-27, at the user's request**: BH (Benjamini-Hochberg) correction
+is applied over the m positions that actually clear the coverage minimums
+(NOT the full 746/35 candidate space -- a position never tested doesn't
+belong in the correction family). `bh_qvalue` is the FDR-controlled
+figure the shortlist below is actually built on; `mannwhitney_p` is kept
+for reference/ranking but is no longer, on its own, a significance claim.
+
 Output: `redocking/results/rescoring/position_cohesion_scan.csv` (every
-position that clears the coverage minimums, sorted by Mann-Whitney p),
-plus a printed "recommended for experimental follow-up" shortlist:
-p <= --p-threshold, direction == importer_favorable, gap >=
---min-gap, and importer side mostly favorable (frac_unfavorable_importer
-<= --max-importer-unfavorable-frac).
+position that clears the coverage minimums, sorted by Mann-Whitney p,
+with both `mannwhitney_p` and `bh_qvalue`), plus a printed "recommended
+for experimental follow-up" shortlist: bh_qvalue <= --q-threshold,
+direction == importer_favorable, gap >= --min-gap, and importer side
+mostly favorable (frac_unfavorable_importer <= --max-importer-unfavorable-frac).
 """
 from __future__ import annotations
 
 import argparse
 
 import pandas as pd
-from scipy.stats import mannwhitneyu
+from scipy.stats import false_discovery_control, mannwhitneyu
 
 import config
 
@@ -128,7 +135,24 @@ def scan(lda_unfavorable: pd.DataFrame, loadings: pd.DataFrame,
             row["is_cdd_pocket"] = bool(group["is_cdd_pocket"].iloc[0])
             row["cdd_position"] = cdd_position
         rows.append(row)
-    return pd.DataFrame(rows).sort_values("mannwhitney_p")
+
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+    # BH (Benjamini-Hochberg) correction over the m positions ACTUALLY tested here
+    # (not the full 746/35 candidate space -- a position that never cleared the
+    # coverage minimums was never tested, so it doesn't belong in the correction
+    # family). At the user's request (2026-08-27), since scanning many positions
+    # at once is exactly the multiple-testing situation the module's own earlier
+    # caveat warned about -- this turns that caveat into an actual correction
+    # instead of just a footnote.
+    result["bh_qvalue"] = float("nan")
+    valid = result["mannwhitney_p"].notna()
+    if valid.any():
+        result.loc[valid, "bh_qvalue"] = false_discovery_control(
+            result.loc[valid, "mannwhitney_p"].to_numpy(), method="bh",
+        )
+    return result.sort_values("mannwhitney_p")
 
 
 def main() -> None:
@@ -141,9 +165,11 @@ def main() -> None:
                      help="minimum importer proteins with a contact at a position to consider it (default 4/5)")
     ap.add_argument("--min-non-importer-n", type=int, default=12,
                      help="minimum non_importer proteins with a contact at a position to consider it (default 12/19)")
-    ap.add_argument("--p-threshold", type=float, default=0.1,
-                     help="Mann-Whitney p cutoff for the recommendation shortlist (default 0.1 -- "
-                          "exploratory ranking, not a corrected significance threshold, see module docstring)")
+    ap.add_argument("--q-threshold", type=float, default=0.2,
+                     help="BH (Benjamini-Hochberg)-adjusted q-value cutoff for the recommendation "
+                          "shortlist (default 0.2 -- lenient on purpose, this is an exploratory "
+                          "screen prioritizing candidates for experimental follow-up, not a "
+                          "publication-grade significance claim; tighten to 0.05-0.1 for a stricter cut)")
     ap.add_argument("--min-gap", type=float, default=0.3,
                      help="minimum (frac_unfavorable_non_importer - frac_unfavorable_importer) for the shortlist")
     ap.add_argument("--max-importer-unfavorable-frac", type=float, default=0.25,
@@ -167,25 +193,26 @@ def main() -> None:
     result = scan(energetics, loadings, args.min_importer_n, args.min_non_importer_n)
     result.to_csv(OUT_CSV, index=False)
     n_cdd = int(result["is_cdd_pocket"].sum()) if "is_cdd_pocket" in result.columns else len(result)
-    print(f"[scan_position_cohesion] wrote {OUT_CSV} ({len(result)}/{n_total_positions} positions cleared "
-          f"the coverage minimums" + (f", {n_cdd} inside the CDD pocket, {len(result) - n_cdd} outside)" if "is_cdd_pocket" in result.columns else ")"))
-    print("[scan_position_cohesion] CAVEAT: importer n<=10 per position -- Mann-Whitney p-values here are a "
-          "ranking heuristic across positions, not multiple-testing-corrected significance claims. Positions "
-          "outside the CDD pocket additionally rely on a sequence-only (not structural) alignment there -- see "
-          "build_position_mapping.py --full's own caveat. Treat this as a shortlist to prioritize experimental "
-          "follow-up, not a finished result.\n")
+    m = len(result)
+    print(f"[scan_position_cohesion] wrote {OUT_CSV} ({m}/{n_total_positions} positions cleared "
+          f"the coverage minimums" + (f", {n_cdd} inside the CDD pocket, {m - n_cdd} outside)" if "is_cdd_pocket" in result.columns else ")"))
+    print(f"[scan_position_cohesion] BH (Benjamini-Hochberg) correction applied over these {m} tested "
+          "positions -- raw Mann-Whitney p-values alone are a ranking heuristic (importer n<=10 per "
+          "position), not a significance claim; bh_qvalue is the FDR-controlled figure the shortlist "
+          "below actually uses. Positions outside the CDD pocket additionally rely on a sequence-only "
+          "(not structural) alignment there -- see build_position_mapping.py --full's own caveat.\n")
 
     shortlist = result[
-        (result["mannwhitney_p"] <= args.p_threshold)
+        (result["bh_qvalue"] <= args.q_threshold)
         & (result["direction"] == "importer_favorable")
         & (result["unfavorable_gap"] >= args.min_gap)
         & (result["frac_unfavorable_importer"] <= args.max_importer_unfavorable_frac)
     ]
     print(f"[scan_position_cohesion] {len(shortlist)} position(s) recommended for experimental follow-up "
-          f"(p<={args.p_threshold}, importer-favorable direction, unfavorable_gap>={args.min_gap}, "
+          f"(BH q<={args.q_threshold}, importer-favorable direction, unfavorable_gap>={args.min_gap}, "
           f"importer unfavorable frac<={args.max_importer_unfavorable_frac}):\n")
     cols = ["position", "n_importer", "n_non_importer", "frac_unfavorable_importer",
-            "frac_unfavorable_non_importer", "mannwhitney_p", "lda_importance", "dominant_z_scale"]
+            "frac_unfavorable_non_importer", "mannwhitney_p", "bh_qvalue", "lda_importance", "dominant_z_scale"]
     if "is_cdd_pocket" in result.columns:
         cols += ["is_cdd_pocket", "cdd_position"]
     print(shortlist[cols].to_string(index=False))
