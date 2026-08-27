@@ -17,6 +17,12 @@ logs/
 redocking/data/
 redocking/ligand_topology/
 
+# mmgbsa/ generated output (GA1 GAFF2/AM1-BCC params, manifest.csv, acpype
+# cache) -- regenerable from mmgbsa/src/*.py; mmgbsa/results/ is covered by
+# the global results/ rule above. Only mmgbsa/src/, README.md, RESULTS.md and
+# envs/mmgbsa.yaml are tracked.
+mmgbsa/data/
+
 # ── Snakemake internals ───────────────────────────────────────────────────────
 .snakemake/
 *.snakemake.log

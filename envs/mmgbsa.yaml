@@ -1,0 +1,47 @@
+name: mmgbsa
+# MM-GBSA per-residue decomposition of the redocking/ HADDOCK3-redocked GA1
+# poses (mmgbsa/ pilot). See mmgbsa/README.md for the full pipeline and
+# rationale. Third physics-based cross-check alongside redocking/ (HADDOCK3/
+# CNS) and rescoring/ (PyRosetta REF2015) -- short explicit-solvent GROMACS
+# MD then gmx_MMPBSA GB (igb=8) endpoint with per-residue energy
+# decomposition, on the SAME poses, mapped onto the SAME alignment positions.
+#
+# GROMACS: NEITHER cluster (IFB core, IBMP pangloss) ships a gromacs module
+# (checked 2026-08-27: `module spider gromacs` fails on both). Two options,
+# and the Stage 3 job script (run_md_batch.py) auto-detects which is present:
+#   1. A site GROMACS module installed by IT -- PREFERRED on pangloss
+#      (GPU-enabled build for the L4 / tesla nodes). The job script does
+#      `module load gromacs` and uses that `gmx` if it appears.
+#      -> see mmgbsa/INSTALL.md for the exact spec to hand to IT.
+#   2. The conda-forge `gromacs` pinned below -- a portable CPU build, always
+#      works, fine for the smoke test and usable (slower) for the full run on
+#      a fat `fast`-partition node. Used automatically if no module is found.
+#
+# gmx_MMPBSA is pip-only (not on conda-forge); it shells out to this env's
+# AmberTools (tleap/parmchk2/cpptraj) and needs `gmx` on PATH.
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - python=3.10
+  - gromacs>=2024            # portable CPU build -- fallback when no site module (see header)
+  - ambertools>=23           # tleap / parmchk2 / cpptraj -- gmx_MMPBSA's topology + endpoint backend
+  - acpype                   # GA1 GAFF2 topology + AM1-BCC charges (Stage 0); same tool
+                              # redocking/src/prep_ligand_topology.py already relies on
+  - rdkit>=2023.9            # Stage 2: place the acpype GA1 conformer (known atom order) onto
+                              # each HADDOCK3 pose by substructure match + rigid align -- same
+                              # approach redocking/src/build_ga1_from_ga3.py uses
+  - openmpi                  # MPI runtime for `gmx_MMPBSA MPI`
+  - mpi4py
+  - numpy<2.0
+  - pandas>=2.0
+  - pyarrow>=15.0           # reads redocking/rescoring parquet/csv intermediates
+  - gemmi>=0.7               # reads gzipped HADDOCK3 flexref_*.pdb.gz poses
+  - scipy>=1.11              # Mann-Whitney U + Benjamini-Hochberg (Stage 6)
+  - matplotlib>=3.8         # Stage 8 static SVG figures (same stack as rescoring/src/plots.py)
+  - seaborn>=0.13
+  - pyyaml>=6.0
+  - pip
+  - pip:
+      - gmx_MMPBSA>=1.6.4    # end-state GB free energy + per-residue decomposition
