@@ -1,41 +1,98 @@
-# Software request for `mmgbsa/` (hand this to IT)
+# GROMACS on pangloss — resolution + diagnosis
 
-The `mmgbsa/` pipeline needs **one** piece of software installed as a module on
-**pangloss** (`pangloss.ibmp.unistra.fr`). Everything else comes from a user
-Conda environment (`~/miniforge3`) and needs no admin action.
+**Status (2026-08-28): resolved, no admin action needed.** GROMACS comes from
+the user Conda env; see "Resolution" below. This file keeps the record of the
+GPU-detection problem that got us here, in case anyone revisits it or wants to
+provide a site module later.
 
-## Requested: a GPU-enabled GROMACS module
+---
 
-- **Package**: GROMACS, version **2024.x or 2025.x** (any recent stable).
-- **Build**: single precision, **CUDA-enabled**, thread-MPI (regular MPI not
-  required — every run is single-node). `-DGMX_BUILD_OWN_FFTW=ON` is fine if
-  FFTW isn't already available.
-- **GPU architectures**: the jobs run on the `cryoem` partition (node
-  `oss117`, 2× NVIDIA **L4**, compute capability **8.9**) and possibly the
-  `gpu` partition (node `niobe`, 2× Tesla). A default recent-CUDA build
-  (CUDA ≥ 12.0) that targets SM 7.0 through 8.9 covers both.
-- **Expose as an Lmod module** named `gromacs` (or `gromacs/<version>`),
-  in the same modulefile tree as the existing bio tools
-  (`/shared/biotools/modules/...`), so that on a login or compute node:
+## Resolution
 
-  ```bash
-  module load gromacs
-  gmx --version        # must report:  GPU support:  CUDA
-  ```
+The `mmgbsa` Conda env carries its own CUDA GROMACS:
 
-That's the whole request. If it's easier to also provide an `AmberTools`
-module (≥ 22), that's welcome but **not needed** — the pipeline installs
-AmberTools into its Conda env.
+```bash
+CONDA_OVERRIDE_CUDA=12.4 mamba install -n mmgbsa -c conda-forge "gromacs=*=nompi_cuda_*"
+```
 
-## Why (context, not required reading)
+`CONDA_OVERRIDE_CUDA` is required because the install runs on a login node with
+no GPU, so the solver would otherwise pick the CPU build. The pipeline then
+uses `~/miniforge3/envs/mmgbsa/bin/gmx` for every stage (grompp, mdrun,
+`gmx_MMPBSA`) — one GROMACS version end to end, self-contained (bundles its own
+CUDA runtime + `share/gromacs/top`).
 
-Short classical-MD runs (a few ns each, ~50–70k-atom protein–ligand–water
-systems) followed by MM-GBSA end-state free-energy analysis. GPU offload
-(`mdrun -nb gpu`) is ~5–10× faster than CPU for this system size; the L4 node
-is the target. Without a module the pipeline falls back to a CPU-only
-Conda GROMACS, which works but is much slower for the full ~140-complex set.
+```
+GROMACS version:  2026.3-conda_forge
+GPU support:      CUDA
+CUDA targets:     50;52-real;60-real;61-real;70-real;75-real;80-real;86-real;89-real;90-real;120
+```
 
-## After it's installed
+`70-real` covers niobe's V100S; the bare `50` and `120` add PTX so any other
+card also works.
 
-Tell the user (`ereboul`) the exact module name. Nothing else changes on the
-admin side — the user creates the Conda env and submits the SLURM job arrays.
+---
+
+## The problem this replaced
+
+IT (dpflieger) kindly hand-built a CUDA GROMACS at
+`/shared/home/dpflieger/Shared/gmx` (GROMACS 2026.3, source tree
+`/shared/home/dpflieger/Softs/gromacs-2026.3/build`). It runs, and
+`gmx --version` reports `GPU support: CUDA` — but on niobe every `mdrun`
+**silently fell back to the CPU**.
+
+### niobe's GPUs
+
+```
+$ nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv
+name, compute_cap, driver_version
+Tesla V100S-PCIE-32GB, 7.0, 580.126.20
+Tesla V100S-PCIE-32GB, 7.0, 580.126.20
+```
+
+Compute capability **7.0** (SM 70).
+
+### The site binary's GPU code
+
+```
+$ /shared/home/dpflieger/Shared/gmx --version | grep -i cuda
+GPU support:   CUDA
+CUDA targets:  75;80-real;86-real;89-real;90-real;100-real;120
+```
+
+**No 7.0**, and every entry except `120` carries `-real` (SASS only, no PTX
+fallback). So the binary has no GPU code the V100S can run.
+
+### The silent symptom
+
+In the `mdrun` log (`nvt.log` / `md.log`) — no error, one quiet line:
+
+```
+Running on 1 node with total 48 cores, 96 processing units, 0 compatible GPUs
+  GPU info:
+    Number of GPUs detected: 1
+Using 16 OpenMP threads
+```
+
+`0 compatible GPUs` → the run proceeds entirely on 16 CPU threads. From the
+outside the job looks normal, it is just ~8× slower. Measured on this fallback:
+**~25 ns/day** for the ~106k-atom NPF3.1 + GA1 system (vs. the GPU number in
+`RESULTS.md`).
+
+---
+
+## If a site module is ever wanted
+
+Not necessary, but if IT wants to provide one so other users benefit: rebuild
+with **`70`** in the target list and keep the PTX layer —
+
+```
+cd /shared/home/dpflieger/Softs/gromacs-2026.3/build
+cmake -DGMX_CUDA_TARGET_SM="70;75;80;86;89;90" ..   # no "-real" -> PTX kept
+make -j gmx
+```
+
+~15–40 min (only CUDA kernels recompile). Verify:
+`gmx --version` shows `70` in `CUDA targets`, and an `mdrun` on niobe logs
+`1 GPU selected` / tasks `on the GPU`, not `0 compatible GPUs`. Then point the
+pipeline at it with `run_md_batch.py --gmx-bin <path>` (or expose it as an Lmod
+module named `gromacs` and use `--gmx-bin '' --gromacs-module gromacs`).
