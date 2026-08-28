@@ -94,8 +94,15 @@ set -euo pipefail
 
 ENV="{conda_root}/{env}"
 export PATH="$ENV/bin:$PATH"
-module load {gromacs_module} 2>/dev/null || true   # gmx_MMPBSA needs `gmx` on PATH; conda gmx ($ENV/bin) is the fallback
+GMX_BIN="{gmx_bin}"
+if [[ -n "$GMX_BIN" ]]; then
+    export PATH="$(dirname "$GMX_BIN"):$PATH"
+    [[ -d "$ENV/share/gromacs/top" ]] && export GMXLIB="$ENV/share/gromacs/top"
+else
+    module load {gromacs_module} 2>/dev/null || true   # conda gmx ($ENV/bin) is the fallback
+fi
 echo "[gb] gmx: $(command -v gmx || echo NONE)"
+gmx --version 2>/dev/null | grep -E "GROMACS version" || true
 MANIFEST="{manifest}"
 
 LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$MANIFEST")
@@ -153,6 +160,9 @@ def main() -> None:
     ap.add_argument("--env", default=DEFAULT_ENV)
     ap.add_argument("--gromacs-module", default=DEFAULT_GROMACS_MODULE,
                     help="site module to `module load` for gmx; '' or 'none' to skip and use the conda gmx")
+    ap.add_argument("--gmx-bin", default="",
+                    help="explicit gmx binary (its dir is prepended to PATH; needed if the Stage 3 "
+                         "trajectory/tpr was written by a GROMACS newer than the conda one). '' = conda/module.")
     args = ap.parse_args()
 
     rows = config.read_csv_rows(config.MANIFEST_CSV)
@@ -178,12 +188,13 @@ def main() -> None:
     manifest.write_text("\n".join(f"{c}\t{rep}" for c, rep in tasks) + "\n")
 
     gmod = "true" if args.gromacs_module.lower() in ("", "none") else args.gromacs_module
+    gmx_bin = "" if args.gmx_bin.lower() in ("", "none") else args.gmx_bin
     script = JOB_SCRIPT.format(
         partition=args.partition, np=args.np, mem=DEFAULT_MEM, time=args.time,
         last=len(tasks) - 1, maxc=args.max_concurrent, logdir=config.SLURM_LOG_DIR,
         manifest=manifest, systems_dir=config.SYSTEMS_DIR, md_dir=config.MD_DIR,
         mmgbsa_dir=config.MMGBSA_DIR, conda_root=args.conda_root, env=args.env,
-        gromacs_module=gmod, ligand_mol2=config.LIGAND_PARAMS_DIR / "GA1.mol2",
+        gromacs_module=gmod, gmx_bin=gmx_bin, ligand_mol2=config.LIGAND_PARAMS_DIR / "GA1.mol2",
     )
     script_path = config.SLURM_CFG_DIR / ("submit_gb.smoke.sh" if args.smoke else "submit_gb.sh")
     script_path.write_text(script)

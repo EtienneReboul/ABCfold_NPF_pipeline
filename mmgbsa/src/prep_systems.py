@@ -83,14 +83,20 @@ def split_pose(pose_pdb: Path, out_protein: Path, out_ligand: Path) -> None:
 
 
 def place_ligand_conformer(pose_ligand_pdb: Path, out_pdb: Path) -> None:
-    """Move the acpype GA1 template (atom order == GA1_GMX.itp) onto the docked
-    ligand by MCS + rigid align, then write it as PDB (resname GA1, chain B)."""
+    """Move the GA1 template onto the docked ligand by MCS + rigid align, then
+    write it as PDB (resname GA1, chain B).
+
+    Template source is the original build_ga1_from_ga3.sdf, NOT acpype's
+    GA1.mol2: acpype writes GAFF atom types (c3/ca/os/hc/...) in the mol2
+    element column, which RDKit's mol2 reader rejects ("Element 'c3' not
+    found"). The SDF is the same 49-atom molecule in the same atom order
+    acpype preserved into GA1_GMX.itp, with real element symbols + bonds."""
     from rdkit import Chem
     from rdkit.Chem import AllChem, rdFMCS
 
-    templ = Chem.MolFromMol2File(str(config.LIGAND_PARAMS_DIR / "GA1.mol2"), removeHs=False, sanitize=True)
+    templ = Chem.MolFromMolFile(str(config.GA1_SDF), removeHs=False, sanitize=True)
     if templ is None:
-        raise RuntimeError("could not read data/ligand_params/GA1.mol2 -- run build_ligand_params.py")
+        raise RuntimeError(f"could not read {config.GA1_SDF} (GA1 template)")
 
     block = pose_ligand_pdb.read_text()
     pose = Chem.MolFromPDBBlock(block, removeHs=False, sanitize=False)
@@ -179,6 +185,50 @@ def wire_ca_posres(topol: Path) -> None:
     topol.write_text("\n".join(out) + "\n")
 
 
+_AA3 = {
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET",
+    "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "HID", "HIE", "HIP", "HSD", "HSE", "HSP",
+    "CYX", "CYM", "ASH", "GLH", "LYN", "ACE", "NME", "NMA",
+}
+_WATER = {"SOL", "HOH", "WAT", "TIP3", "T3P"}
+_IONS = {"NA", "CL", "K", "MG", "CA", "ZN", "NA+", "CL-", "SOD", "CLA"}
+
+
+def write_index_ndx(system_gro: Path, out_ndx: Path) -> None:
+    """Deterministic index.ndx from a .gro: System / Protein / GA1 /
+    Water / Ion / Protein_GA1 / Water_and_ions. Atom serials are 1-based,
+    matching GROMACS .gro atom order."""
+    lines = system_gro.read_text().splitlines()
+    natoms = int(lines[1])
+    groups: dict[str, list[int]] = {k: [] for k in
+                                    ("System", "Protein", config.LIGAND_RESNAME, "Water", "Ion")}
+    for i, line in enumerate(lines[2:2 + natoms], start=1):
+        resname = line[5:10].strip()
+        groups["System"].append(i)
+        if resname in _AA3:
+            groups["Protein"].append(i)
+        elif resname == config.LIGAND_RESNAME or resname == "MOL":
+            groups[config.LIGAND_RESNAME].append(i)
+        elif resname in _WATER:
+            groups["Water"].append(i)
+        elif resname in _IONS:
+            groups["Ion"].append(i)
+    groups["Protein_GA1"] = sorted(groups["Protein"] + groups[config.LIGAND_RESNAME])
+    groups["Water_and_ions"] = sorted(groups["Water"] + groups["Ion"])
+
+    if not groups[config.LIGAND_RESNAME]:
+        raise RuntimeError(f"{system_gro}: no ligand atoms (resname {config.LIGAND_RESNAME}/MOL) found")
+    if not groups["Protein"]:
+        raise RuntimeError(f"{system_gro}: no protein atoms found")
+
+    with out_ndx.open("w") as fh:
+        for name, idxs in groups.items():
+            fh.write(f"[ {name} ]\n")
+            for j in range(0, len(idxs), 15):
+                fh.write(" ".join(f"{k:>7d}" for k in idxs[j:j + 15]) + "\n")
+            fh.write("\n")
+
+
 def merge_gro(protein_gro: Path, ligand_gro: Path, out_gro: Path) -> None:
     p = protein_gro.read_text().splitlines()
     l = ligand_gro.read_text().splitlines()
@@ -240,10 +290,11 @@ def prepare_one(row: dict, smoke: bool, force: bool) -> str:
         cwd=sysdir, inp="0\n", log=log)  # group 0 = System = the ligand alone in ligand.gro
     wire_ca_posres(sysdir / "topol.top")
 
-    # 7. index groups: Protein_GA1 (tc-grps) + GA1 (gmx_MMPBSA ligand)
-    gmx(["make_ndx", "-f", "system.gro", "-o", "index.ndx"], cwd=sysdir,
-        inp='r GA1\nname 20 GA1\n"Protein" | "GA1"\nname 21 Protein_GA1\n'
-            '"Water" | "Ion" | "NA" | "CL"\nname 22 Water_and_ions\nq\n', log=log)
+    # 7. index groups -- built directly from system.gro (deterministic; avoids
+    #    gmx make_ndx's shifting default-group numbering). Needs: GA1
+    #    (gmx_MMPBSA ligand selection), Protein_GA1 and Water_and_ions (mdp
+    #    tc-grps).
+    write_index_ndx(sysdir / "system.gro", sysdir / "index.ndx")
 
     # 8. equilibration mdp files (prod.mdp is per-replica, Stage 3)
     (sysdir / "em.mdp").write_text(mdp.EM)

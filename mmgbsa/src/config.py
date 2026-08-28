@@ -76,9 +76,12 @@ LDA_GA1_LOADINGS_TSV = RESCORING_ROOT / "data" / "lda_GA1_loadings.tsv"
 # ---------------------------------------------------------------------------
 LIGAND_KEY = "GA1"
 LIGAND_RESNAME = "GA1"           # residue name carried through to the GROMACS/Amber topology
-LIGAND_NET_CHARGE = -1           # C-6 carboxylate deprotonated at physiological pH; the
-                                 # C-19->C-10 lactone is neutral. Single modelled state,
-                                 # documented, not scanned -- see build_ligand_params.py.
+# redocking/data/ga1_from_ga3.sdf is NEUTRAL GA1 (49 atoms, formal charge 0 -- confirmed
+# 2026-08-28). acpype/tleap can only build the charge state the input actually has, so the
+# default is 0. The chemically-correct -1 monoanion (C-6 carboxylate deprotonated at
+# physiological pH; C-19->C-10 lactone stays neutral) needs a deprotonated input SDF first
+# -- TODO for the production run; it does not affect MD timing. Override with --net-charge.
+LIGAND_NET_CHARGE = 0
 
 PROTEIN_CHAIN = "A"              # HADDOCK3 receptor chain (redocking/src/make_haddock_cfg.py)
 LIGAND_CHAIN_HADDOCK = "B"      # HADDOCK3 ligand chain, molecule 2 -- confirmed against a real

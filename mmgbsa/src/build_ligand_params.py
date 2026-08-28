@@ -68,6 +68,28 @@ def run_acpype(sdf_path: Path, work_dir: Path, net_charge: int, basename: str = 
     return out_dir
 
 
+def _rename_residue_in_itp(itp_path: Path, new_resname: str) -> None:
+    """acpype hard-codes the residue name in [ atoms ] column 4 as 'MOL'
+    regardless of -b. Rewrite it to <new_resname> so it matches the coordinate
+    files and `gmx make_ndx`'s `r <new_resname>` in prep_systems.py (grompp
+    itself keys off the [ moleculetype ] name, which acpype already sets from
+    -b, so this only fixes the residue label)."""
+    lines = itp_path.read_text().splitlines()
+    out, in_atoms = [], False
+    for line in lines:
+        s = line.strip()
+        if s.startswith("["):
+            in_atoms = s.replace(" ", "").lower() == "[atoms]"
+            out.append(line); continue
+        if in_atoms and s and not s.startswith(";"):
+            cols = line.split()
+            if len(cols) >= 8 and cols[3] == "MOL":
+                line = line.replace(f" {cols[3]} ", f" {new_resname} ", 1) if f" {cols[3]} " in line \
+                    else line.replace("MOL", new_resname, 1)
+        out.append(line)
+    itp_path.write_text("\n".join(out) + "\n")
+
+
 def _itp_charge_sum_and_count(itp_path: Path) -> tuple[float, int]:
     """Sum column 7 (charge) and count rows of an .itp [ atoms ] section."""
     lines = itp_path.read_text().splitlines()
@@ -110,23 +132,31 @@ def main() -> None:
         shutil.rmtree(work_dir)
     acpype_dir = run_acpype(args.sdf, work_dir, args.net_charge)
 
-    # acpype filenames: <base>_GMX.itp / <base>_GMX.gro / <base>_GMX.top /
-    # <base>.mol2 / <base>_AC.frcmod / <base>_AMBER.prmtop / <base>_AMBER.inpcrd
+    # acpype 2023.10.27 filenames (confirmed on a real run 2026-08-28):
+    #   <base>_GMX.itp / <base>_GMX.gro / <base>_GMX.top   (GROMACS)
+    #   <base>_AC.prmtop / <base>_AC.inpcrd / <base>_AC.frcmod   (Amber, "_AC" not "_AMBER")
+    #   <base>_bcc_gaff2.mol2   (mol2 name = <base>_<chargemethod>_<atomtypes>.mol2)
+    def _pick(*candidates: str) -> Path:
+        for c in candidates:
+            for hit in sorted(acpype_dir.glob(c)):
+                return hit
+        raise FileNotFoundError(
+            f"none of {candidates} found in {acpype_dir} -- check acpype.log / leap.log there.")
+
     copies = {
-        "GA1_GMX.itp": "GA1_GMX.itp",
-        "GA1_GMX.gro": "GA1_GMX.gro",
-        "GA1_GMX.top": "GA1_GMX.top",
-        "GA1.mol2": "GA1.mol2",
-        "GA1_AC.frcmod": "GA1_AC.frcmod",
-        "GA1_AMBER.prmtop": "GA1.prmtop",
-        "GA1_AMBER.inpcrd": "GA1.inpcrd",
+        _pick("GA1_GMX.itp"): "GA1_GMX.itp",
+        _pick("GA1_GMX.gro"): "GA1_GMX.gro",
+        _pick("GA1_GMX.top"): "GA1_GMX.top",
+        _pick("GA1_bcc_gaff2.mol2", "GA1_*.mol2", "GA1.mol2"): "GA1.mol2",
+        _pick("GA1_AC.frcmod", "GA1*.frcmod"): "GA1_AC.frcmod",
+        _pick("GA1_AC.prmtop", "GA1_AMBER.prmtop", "GA1*.prmtop"): "GA1.prmtop",
+        _pick("GA1_AC.inpcrd", "GA1_AMBER.inpcrd", "GA1*.inpcrd"): "GA1.inpcrd",
     }
     config.LIGAND_PARAMS_DIR.mkdir(parents=True, exist_ok=True)
-    for src_name, dst_name in copies.items():
-        src = acpype_dir / src_name
-        if not src.exists():
-            raise FileNotFoundError(f"expected acpype output {src} missing -- check {acpype_dir} log files.")
+    for src, dst_name in copies.items():
         shutil.copy(src, config.LIGAND_PARAMS_DIR / dst_name)
+
+    _rename_residue_in_itp(out_itp, config.LIGAND_RESNAME)   # MOL -> GA1 in [ atoms ]
 
     charge_sum, n_atoms = _itp_charge_sum_and_count(out_itp)
     if round(charge_sum) != args.net_charge:

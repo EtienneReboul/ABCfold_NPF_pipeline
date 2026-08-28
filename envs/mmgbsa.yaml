@@ -33,15 +33,21 @@ dependencies:
                               # each HADDOCK3 pose by substructure match + rigid align -- same
                               # approach redocking/src/build_ga1_from_ga3.py uses
   - openmpi                  # MPI runtime for `gmx_MMPBSA MPI`
-  - mpi4py
+  - mpi4py                   # from conda (pip-building it needs a compiler the env doesn't ship)
+  - parmed                   # gmx_MMPBSA dep -- from conda so the pip step can use --no-deps
+  - h5py                     # gmx_MMPBSA dep
+  - tqdm                     # gmx_MMPBSA dep
   - numpy<2.0
   - pandas>=2.0
   - pyarrow>=15.0           # reads redocking/rescoring parquet/csv intermediates
   - gemmi>=0.7               # reads gzipped HADDOCK3 flexref_*.pdb.gz poses
-  - scipy>=1.11              # Mann-Whitney U + Benjamini-Hochberg (Stage 6)
+  - scipy>=1.11              # Mann-Whitney U + Benjamini-Hochberg (Stage 6) + gmx_MMPBSA dep
   - matplotlib>=3.8         # Stage 8 static SVG figures (same stack as rescoring/src/plots.py)
   - seaborn>=0.13
   - pyyaml>=6.0
   - pip
   - pip:
+      # --no-deps: every runtime dep is a conda pkg above, and pip otherwise tries to
+      # BUILD mpi4py from sdist (fails -- no compiler in the env).
+      - "--no-deps"
       - gmx_MMPBSA>=1.6.4    # end-state GB free energy + per-residue decomposition
