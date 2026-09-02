@@ -14,6 +14,7 @@ dependencies:
   - kneed>=0.8            # BIC-knee detection for GMM auto-k
   - optuna>=3.6           # TPE search for HDBSCAN hyperparameters, scored by DBCV
   - hdbscan>=0.8           # validity_index (DBCV) for HDBSCAN tuning
+  - umap-learn>=0.5        # pocket_chemistry_embedding.ipynb: UMAP projection of the Z-scale pocket embedding
   - ipywidgets>=8.0        # click-to-reveal-in-Finder callbacks on FigureWidget traces
   - gemmi>=0.7             # plot_ligand_pca: reads raw CIF Ca + ligand atom coordinates directly
   - pip:
